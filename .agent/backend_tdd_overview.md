@@ -394,21 +394,21 @@ Legend: each item follows **test file → source file**. Check the box when both
   - [ ] uses `tmp_path` for per-test DB isolation
   - [ ] overrides `get_db` via `app.dependency_overrides`
   - [ ] clears `dependency_overrides` on teardown
-- [ ] `pytest.ini` created with `asyncio_mode = auto`
+- [x] `pytest.ini` created with `asyncio_mode = auto`
 
-#### `tests/integration/test_repository.py` (optional) → `app/db/repository.py`
+#### `test/integration/test_repository.py` (optional) → `app/db/repository.py`
 
-- [ ] `insert_job()` implemented
-  - [ ] `test_insert_job_returns_true_on_first_insert`
-  - [ ] `test_insert_job_returns_false_on_duplicate`
-- [ ] `get_all_jobs()` implemented
-  - [ ] `test_get_all_jobs_filters_by_status`
-- [ ] `get_job_by_id()` implemented
-- [ ] `get_job_by_fingerprint()` implemented
-- [ ] `update_job_status()` implemented
-  - [ ] `test_update_status_persists_change`
-- [ ] `delete_job()` implemented
-  - [ ] `test_delete_returns_false_for_missing_id`
+- [x] `insert_job()` implemented
+  - [x] `test_insert_job_returns_true_on_first_insert`
+  - [x] `test_insert_job_returns_false_on_duplicate`
+- [x] `get_all_jobs()` implemented
+  - [x] `test_get_all_jobs_filters_by_status`
+- [x] `get_job_by_id()` implemented
+- [x] `get_job_by_fingerprint()` implemented
+- [x] `update_job_status()` implemented
+  - [x] `test_update_status_persists_change`
+- [x] `delete_job()` implemented
+  - [x] `test_delete_returns_false_for_missing_id`
 
 ---
 
