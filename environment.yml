@@ -12,6 +12,7 @@ dependencies:
   - loguru
   - pytest
   - pytest-asyncio
+  - pytest-cov
   - httpx
   - streamlit
   - apscheduler

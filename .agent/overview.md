@@ -229,7 +229,7 @@ Runs two background jobs:
 Each layer is built, tested, and stable before the next is started. Later layers depend on earlier ones — the agent is useless without a working backend.
 
 ```
-Week 1   Backend API        Models, DB, repository, CRUD routes, TDD
+Week 1   Backend API        Models, DB, repository, CRUD routes, TDD (DONE AND TESTED)
 Week 2   Agent Brain        Tool definitions, ReAct loop, session memory
 Week 3   Scraping Layer     Tavily integration, parsing, rate limiting
 Week 4   Scoring & Dedup    Scoring function, fingerprinting, wired into ingestion

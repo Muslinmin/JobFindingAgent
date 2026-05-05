@@ -13,31 +13,32 @@ Stack: FastAPI (transport), SQLite via `aiosqlite` (persistence), Pydantic (vali
 ## Project Structure
 
 ```
-job_tracker/
-├── app/
-│   ├── main.py              # FastAPI app entry point, middleware, lifespan
-│   ├── config.py            # Environment config via pydantic-settings
-│   ├── models/
-│   │   ├── job.py           # Pydantic request/response schemas
-│   │   └── enums.py         # ApplicationStatus enum + valid transitions
-│   ├── db/
-│   │   ├── database.py      # DB connection, table creation, lifespan hook
-│   │   └── repository.py    # All SQL queries (Repository Pattern)
-│   └── routes/
-│       └── jobs.py          # CRUD API route handlers
-├── tests/
-│   ├── unit/
-│   │   └── test_state_machine.py
-│   ├── integration/
-│   │   └── test_routes.py
-│   └── e2e/
-│       └── test_crud_pipeline.py
-├── conftest.py
+JobFindingAgent/
+├── src/
+│   ├── app/
+│   │   ├── main.py              # FastAPI app entry point, loguru config, router mount
+│   │   ├── config.py            # Environment config via pydantic-settings
+│   │   ├── models/
+│   │   │   ├── job.py           # Pydantic request/response schemas
+│   │   │   └── enums.py         # ApplicationStatus enum + valid transitions
+│   │   ├── db/
+│   │   │   ├── database.py      # DB connection + create_tables()
+│   │   │   └── repository.py    # All SQL queries (Repository Pattern)
+│   │   └── routes/
+│   │       └── jobs.py          # CRUD API route handlers
+│   └── test/
+│       ├── conftest.py          # async_client fixture (per-test isolated DB)
+│       ├── test_schemas.py
+│       ├── test_state_machine.py
+│       ├── integration/
+│       │   ├── test_repository.py
+│       │   └── test_routes.py
+│       └── e2e/
+│           └── test_crud_pipeline.py
 ├── pytest.ini
-├── .env
+├── environment.yml
 ├── .env.example
-├── Dockerfile
-└── requirements.txt
+└── Dockerfile
 ```
 
 ---
@@ -336,11 +337,10 @@ async def delete_job(job_id: int, db=Depends(get_db)):
 from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env")
+
     db_path: str = "./jobs.db"
     log_level: str = "INFO"
-
-    class Config:
-        env_file = ".env"
 
 settings = Settings()
 ```
@@ -368,7 +368,7 @@ logger.add(
 
 | Failure Mode | HTTP Response | Behaviour |
 |---|---|---|
-| Duplicate job insert | `200 OK` | Returns existing row, `created: false` |
+| Duplicate job insert | `201 Created` | Returns existing row, `created: false` |
 | Invalid status transition | `422 Unprocessable Entity` | Message states current → attempted transition |
 | Job ID not found | `404 Not Found` | Standard not found |
 | DB connection failure | `503 Service Unavailable` | Log + let caller retry |

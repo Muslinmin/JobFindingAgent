@@ -453,14 +453,18 @@ Legend: each item follows **test file → source file**. Check the box when both
 
 #### `test/e2e/test_crud_pipeline.py`
 
-- [ ] `test_full_crud_lifecycle` — create → read → patch → patch → delete → 404
-- [ ] `test_rejection_from_any_stage` — create → applied → screening → rejected → patch attempt → 422
+- [x] `test_full_crud_lifecycle` — create → read → patch → patch → delete → 404
+- [x] `test_rejection_from_any_stage` — create → applied → screening → rejected → patch attempt → 422
 
 ---
 
 ### Infra
 
-- [ ] `environment.yml` complete
-- [ ] `Dockerfile` written
-- [ ] `pytest --cov=app --cov-report=term-missing` passing with targets met
+- [x] `environment.yml` complete
+- [x] `Dockerfile` written
+- [x] `pytest --cov=app --cov-report=term-missing` passing with targets met
+  - [x] `app/models/enums.py` — 100%
+  - [x] `app/db/repository.py` — 100%
+  - [x] `app/routes/jobs.py` — 100%
+  - [x] overall `app/` — 98%
 
