@@ -385,16 +385,21 @@ Legend: each item follows **test file → source file**. Check the box when both
 
 #### `app/db/database.py` (no direct tests — overridden via fixture)
 
-- [ ] `get_db()` async generator implemented
-- [ ] `create_tables()` implemented
+- [x] `get_db()` async generator implemented
+- [x] `create_tables()` implemented
 
 #### `conftest.py` — shared fixture
 
-- [ ] `async_client` fixture implemented
-  - [ ] uses `tmp_path` for per-test DB isolation
-  - [ ] overrides `get_db` via `app.dependency_overrides`
-  - [ ] clears `dependency_overrides` on teardown
+- [x] `async_client` fixture implemented
+  - [x] uses `tmp_path` for per-test DB isolation
+  - [x] overrides `get_db` via `app.dependency_overrides`
+  - [x] clears `dependency_overrides` on teardown
 - [x] `pytest.ini` created with `asyncio_mode = auto`
+
+> **Note:** A minimal `app/main.py` stub (bare FastAPI instance, no routes) was created
+> to unblock Phase 2 tests. `conftest.py` imports `app` from `main.py` at collection
+> time, so without the stub all tests would fail with an `ImportError`. The stub will
+> be replaced by the full implementation in Phase 4.
 
 #### `test/integration/test_repository.py` (optional) → `app/db/repository.py`
 
