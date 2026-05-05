@@ -1,0 +1,21 @@
+name: job-finder
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - pip
+  - fastapi
+  - aiosqlite
+  - pydantic
+  - pydantic-settings
+  - loguru
+  - pytest
+  - pytest-asyncio
+  - httpx
+  - streamlit
+  - apscheduler
+  - pip:
+    - "uvicorn[standard]"
+    - anthropic
+    - tavily-python
