@@ -451,7 +451,7 @@ Legend: each item follows **test file → source file**. Check the box when both
 
 ### Phase 5 — End-to-End
 
-#### `tests/e2e/test_crud_pipeline.py`
+#### `test/e2e/test_crud_pipeline.py`
 
 - [ ] `test_full_crud_lifecycle` — create → read → patch → patch → delete → 404
 - [ ] `test_rejection_from_any_stage` — create → applied → screening → rejected → patch attempt → 422
