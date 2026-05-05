@@ -357,27 +357,27 @@ Legend: each item follows **test file → source file**. Check the box when both
 
 #### `tests/unit/test_state_machine.py` → `app/models/enums.py`
 
-- [ ] `ApplicationStatus` enum defined (6 values)
-- [ ] `VALID_TRANSITIONS` dict defined
-- [ ] `InvalidTransitionError` exception defined
-- [ ] `transition()` function implemented
-  - [ ] `test_valid_forward_transition` — `APPLIED → SCREENING` returns `SCREENING`
-  - [ ] `test_cannot_skip_stages` — `FOUND → OFFER` raises
-  - [ ] `test_offer_is_terminal` — `OFFER → SCREENING` raises
-  - [ ] `test_rejected_is_terminal` — `REJECTED → INTERVIEW` raises
-  - [ ] `test_can_reject_from_any_active_stage` — `APPLIED / SCREENING / INTERVIEW → REJECTED` all valid
-  - [ ] `test_cannot_transition_to_same_status` — `FOUND → FOUND` raises
+- [x] `ApplicationStatus` enum defined (6 values)
+- [x] `VALID_TRANSITIONS` dict defined
+- [x] `InvalidTransitionError` exception defined
+- [x] `transition()` function implemented
+  - [x] `test_valid_forward_transition` — `APPLIED → SCREENING` returns `SCREENING`
+  - [x] `test_cannot_skip_stages` — `FOUND → OFFER` raises
+  - [x] `test_offer_is_terminal` — `OFFER → SCREENING` raises
+  - [x] `test_rejected_is_terminal` — `REJECTED → INTERVIEW` raises
+  - [x] `test_can_reject_from_any_active_stage` — `APPLIED / SCREENING / INTERVIEW → REJECTED` all valid
+  - [x] `test_cannot_transition_to_same_status` — `FOUND → FOUND` raises
 
 #### `tests/unit/test_schemas.py` → `app/models/job.py`
 
-- [ ] `JobCreate` schema defined
-- [ ] `JobUpdate` schema defined
-- [ ] `JobResponse` schema defined
-  - [ ] `test_job_create_requires_company_role_url`
-  - [ ] `test_job_create_rejects_invalid_url`
-  - [ ] `test_job_create_source_defaults_to_manual`
-  - [ ] `test_job_create_notes_is_optional`
-  - [ ] `test_job_update_rejects_invalid_status`
+- [x] `JobCreate` schema defined
+- [x] `JobUpdate` schema defined
+- [x] `JobResponse` schema defined
+  - [x] `test_job_create_requires_company_role_url`
+  - [x] `test_job_create_rejects_invalid_url`
+  - [x] `test_job_create_source_defaults_to_manual`
+  - [x] `test_job_create_notes_is_optional`
+  - [x] `test_job_update_rejects_invalid_status`
 
 ---
 
