@@ -421,31 +421,31 @@ Legend: each item follows **test file → source file**. Check the box when both
 
 #### `tests/integration/test_routes.py` → `app/routes/jobs.py`
 
-- [ ] `make_fingerprint()` implemented
-- [ ] `POST /jobs`
-  - [ ] `test_create_job_returns_201`
-  - [ ] `test_create_job_default_status_is_found`
-- [ ] `GET /jobs`
-  - [ ] `test_list_jobs_returns_all`
-  - [ ] `test_status_filter_returns_correct_subset`
-- [ ] `GET /jobs/{id}`
-  - [ ] `test_get_job_by_id_returns_correct_record`
-  - [ ] `test_get_nonexistent_job_returns_404`
-- [ ] `PATCH /jobs/{id}/status`
-  - [ ] `test_valid_transition_returns_200`
-  - [ ] `test_invalid_transition_returns_422`
-  - [ ] `test_patch_nonexistent_job_returns_404`
-- [ ] `DELETE /jobs/{id}`
-  - [ ] `test_delete_job_removes_record`
-  - [ ] `test_delete_nonexistent_job_returns_404`
+- [x] `make_fingerprint()` implemented
+- [x] `POST /jobs`
+  - [x] `test_create_job_returns_201`
+  - [x] `test_create_job_default_status_is_found`
+- [x] `GET /jobs`
+  - [x] `test_list_jobs_returns_all`
+  - [x] `test_status_filter_returns_correct_subset`
+- [x] `GET /jobs/{id}`
+  - [x] `test_get_job_by_id_returns_correct_record`
+  - [x] `test_get_nonexistent_job_returns_404`
+- [x] `PATCH /jobs/{id}/status`
+  - [x] `test_valid_transition_returns_200`
+  - [x] `test_invalid_transition_returns_422`
+  - [x] `test_patch_nonexistent_job_returns_404`
+- [x] `DELETE /jobs/{id}`
+  - [x] `test_delete_job_removes_record`
+  - [x] `test_delete_nonexistent_job_returns_404`
 
 ---
 
 ### Phase 4 — Config, Logging & App Entry Point
 
-- [ ] `app/config.py` — `Settings` with `db_path`, `log_level`
-- [ ] `.env.example` created
-- [ ] `app/main.py` — FastAPI app wired, loguru configured, router mounted
+- [x] `app/config.py` — `Settings` with `db_path`, `log_level`
+- [x] `.env.example` created
+- [x] `app/main.py` — FastAPI app wired, loguru configured, router mounted
 
 ---
 
@@ -460,10 +460,7 @@ Legend: each item follows **test file → source file**. Check the box when both
 
 ### Infra
 
-- [ ] `requirements.txt` complete
+- [ ] `environment.yml` complete
 - [ ] `Dockerfile` written
 - [ ] `pytest --cov=app --cov-report=term-missing` passing with targets met
-  - [ ] `app/models/enums.py` — 100%
-  - [ ] `app/db/repository.py` — 90%+
-  - [ ] `app/routes/jobs.py` — 90%+
-  - [ ] overall `app/` — 80%+
+

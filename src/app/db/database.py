@@ -1,9 +1,8 @@
-import os
 from typing import AsyncGenerator
 
 import aiosqlite
 
-DB_PATH = os.getenv("DB_PATH", "jobs.db")
+from app.config import settings
 
 CREATE_JOBS_TABLE = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -26,6 +25,6 @@ async def create_tables(conn: aiosqlite.Connection) -> None:
 
 
 async def get_db() -> AsyncGenerator[aiosqlite.Connection, None]:
-    async with aiosqlite.connect(DB_PATH) as conn:
+    async with aiosqlite.connect(settings.db_path) as conn:
         conn.row_factory = aiosqlite.Row
         yield conn
