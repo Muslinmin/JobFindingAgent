@@ -1072,7 +1072,7 @@ All other dependencies (`fastapi`, `aiosqlite`, `pydantic`, `loguru`, `httpx`, `
 ## Implementation Checklist
 
 - [x] **Phase 1 — Profile Manager** — `agent/profile.py` + `tests/unit/test_profile.py`
-- [ ] **Phase 2 — Tool Definitions and Executors** — `agent/tools.py` + `tests/unit/test_tools.py`
+- [x] **Phase 2 — Tool Definitions and Executors** — `agent/tools.py` + `tests/unit/test_tools.py`
 - [ ] **Phase 3 — LLM Client** — `agent/llm_client.py` + `tests/unit/test_llm_client.py`
 - [ ] **Phase 4 — System Prompt** — `agent/prompts/system.md` + `tests/unit/test_prompt_rendering.py`
 - [ ] **Phase 5 — ReAct Loop** — `agent/agent.py` + `tests/integration/test_agent.py`

@@ -20,3 +20,4 @@ dependencies:
     - "uvicorn[standard]"
     - anthropic
     - tavily-python
+    - litellm
