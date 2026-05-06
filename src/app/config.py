@@ -11,5 +11,10 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     gemini_api_key: str = ""
 
+    # Scraper
+    tavily_api_key: str = ""
+    scrape_query: str = "software engineer Singapore"
+    scrape_max_results: int = 10
+
 
 settings = Settings()
