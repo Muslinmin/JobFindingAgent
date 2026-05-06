@@ -19,7 +19,7 @@ from app.db.database import create_tables
 from app.db import repository as repo
 from agent.agent import run
 from agent.llm_client import LLMClient
-from agent.profile import read_profile
+from agent.profile import read_profile, write_profile
 
 # Ensure loguru prints to stdout so pytest -s shows it
 logger.remove()
@@ -116,35 +116,22 @@ async def test_agent_search_jobs_have_status_found(live_db):
 async def test_profile_skills_flow_into_search_and_scoring(live_db, tmp_path, monkeypatch):
     """
     Full pipeline e2e:
-      Turn 1  — user sets skills → agent calls update_profile → profile.json written
-      Turn 2  — user requests search → agent calls search_jobs → Tavily returns listings
+      Setup   — profile written directly (profile-update-via-conversation is
+                tested separately in test_agent_live.py)
+      Turn 1  — user requests search → agent calls search_jobs → Tavily returns listings
               → each job scored against profile skills and fingerprinted → inserted into DB
-      Turn 3  — same search repeated → dedup holds, job count unchanged
+      Turn 2  — same search repeated → dedup holds, job count unchanged
     """
     monkeypatch.setattr(settings, "profile_path", str(tmp_path / "profile.json"))
 
+    # Write profile directly — isolates what this test actually exercises
+    write_profile({"skills": ["Python", "FastAPI", "Docker"]})
+    logger.info(f"[profile] {read_profile()}")
+
     llm = LLMClient(model=settings.model)
 
-    # ── Turn 1: populate profile ──────────────────────────────────────────────
+    # ── Turn 1: search for jobs ───────────────────────────────────────────────
     reply_1 = await run(
-        messages=[{
-            "role": "user",
-            "content": "I am a Python developer. My skills are Python, FastAPI, and Docker.",
-        }],
-        db=live_db,
-        llm=llm,
-    )
-    logger.info(f"[turn 1 reply]\n{reply_1}")
-
-    profile = read_profile()
-    logger.info(f"[profile] {profile}")
-    assert "skills" in profile, "profile.json must contain 'skills' after turn 1"
-    assert len(profile["skills"]) > 0, "skills list must not be empty"
-
-    await asyncio.sleep(10)  # avoid burst-hitting LLM rate limits between turns
-
-    # ── Turn 2: search for jobs ───────────────────────────────────────────────
-    reply_2 = await run(
         messages=[{
             "role": "user",
             "content": "Find me Python backend engineer jobs in Singapore.",
@@ -152,7 +139,7 @@ async def test_profile_skills_flow_into_search_and_scoring(live_db, tmp_path, mo
         db=live_db,
         llm=llm,
     )
-    logger.info(f"[turn 2 reply]\n{reply_2}")
+    logger.info(f"[turn 1 reply]\n{reply_1}")
 
     jobs = await repo.get_all_jobs(live_db)
     logger.info(f"[db] {len(jobs)} job(s) after search:")
@@ -164,8 +151,6 @@ async def test_profile_skills_flow_into_search_and_scoring(live_db, tmp_path, mo
 
     assert len(jobs) > 0, "at least one job must be inserted after search"
 
-    await asyncio.sleep(10)  # avoid burst-hitting LLM rate limits between turns
-
     for job in jobs:
         assert isinstance(job["score"], float), \
             f"score must be a float, got {type(job['score'])}"
@@ -174,7 +159,9 @@ async def test_profile_skills_flow_into_search_and_scoring(live_db, tmp_path, mo
         assert job["fingerprint"] is not None and len(job["fingerprint"]) == 64, \
             f"expected 64-char hex fingerprint, got '{job['fingerprint']}'"
 
-    # ── Turn 3: dedup — same search must not grow the table ──────────────────
+    await asyncio.sleep(10)  # avoid burst-hitting LLM rate limits between turns
+
+    # ── Turn 2: dedup — same search must not grow the table ──────────────────
     count_before = len(jobs)
     await run(
         messages=[{

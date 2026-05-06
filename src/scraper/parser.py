@@ -13,14 +13,14 @@ def parse_results(raw_results: list[dict]) -> list[dict]:
         title = result.get("title") or ""
         company, role = _split_title(title)
         raw_content = result.get("content") or ""
-        notes = raw_content[:MAX_NOTES_LENGTH] or None
+        description = raw_content[:MAX_NOTES_LENGTH] or None
 
         parsed.append({
-            "company": company,
-            "role":    role,
-            "url":     url,
-            "source":  "tavily",
-            "notes":   notes,
+            "company":     company,
+            "role":        role,
+            "url":         url,
+            "source":      "tavily",
+            "description": description,
         })
 
     return parsed

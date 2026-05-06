@@ -21,9 +21,10 @@ def test_parse_single_result_returns_correct_shape():
     record = parsed[0]
     assert record["url"]    == "https://careers.gov.sg/1"
     assert record["source"] == "tavily"
-    assert "company" in record
-    assert "role"    in record
-    assert "notes"   in record
+    assert "company"     in record
+    assert "role"        in record
+    assert "description" in record
+    assert "notes"       not in record  # notes is a user field, not set by the parser
 
 
 def test_parse_empty_list_returns_empty_list():
@@ -45,24 +46,24 @@ def test_parse_sets_source_to_tavily():
     assert parsed[0]["source"] == "tavily"
 
 
-def test_parse_content_becomes_notes():
+def test_parse_content_becomes_description():
     parsed = parse_results([_make_result(content="Some job description.")])
-    assert parsed[0]["notes"] == "Some job description."
+    assert parsed[0]["description"] == "Some job description."
 
 
 def test_parse_truncates_long_content_to_500_chars():
     parsed = parse_results([_make_result(content="x" * 600)])
-    assert len(parsed[0]["notes"]) == 500
+    assert len(parsed[0]["description"]) == 500
 
 
-def test_parse_none_content_sets_notes_to_none():
+def test_parse_none_content_sets_description_to_none():
     parsed = parse_results([_make_result(content=None)])
-    assert parsed[0]["notes"] is None
+    assert parsed[0]["description"] is None
 
 
-def test_parse_empty_content_sets_notes_to_none():
+def test_parse_empty_content_sets_description_to_none():
     parsed = parse_results([_make_result(content="")])
-    assert parsed[0]["notes"] is None
+    assert parsed[0]["description"] is None
 
 
 def test_parse_multiple_results_returns_correct_count():
