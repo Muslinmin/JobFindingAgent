@@ -1,6 +1,8 @@
 import inspect
 import json
 
+from pydantic import ValidationError
+
 from app.db import repository as repo
 from app.models.enums import ApplicationStatus, InvalidTransitionError
 from app.models.job import JobCreate
@@ -127,7 +129,10 @@ async def execute_tool(tool_name: str, arguments: dict, db) -> str:
 
 
 async def _log_job(args: dict, db) -> str:
-    job = JobCreate(**args)
+    try:
+        job = JobCreate(**args)
+    except ValidationError as e:
+        return json.dumps({"error": f"Invalid job data: {e.errors()}"})
     fp = make_fingerprint(job)
     record, created = await repo.insert_job(db, job, fp)
     return json.dumps({"created": created, "job": record})
