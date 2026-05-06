@@ -14,7 +14,7 @@ This project is built in layers. Each layer is fully tested before the next begi
 - [x] **Week 4 — Scoring & Dedup** — Keyword scorer, SHA-256 fingerprinting, wired into both ingestion paths, e2e tested
 - [ ] **Week 5 — Frontend** — Streamlit dashboard, APScheduler digest and scrape jobs
 
-**Current version:** `0.4.0` (pre-release — Week 5 remaining before `1.0.0`)
+**Current version:** `0.4.0` (pre-release — Week 5 remaining before `0.5.0`)
 
 ---
 
