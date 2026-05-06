@@ -1,7 +1,7 @@
 """
-Live integration tests — make real API calls to Gemini via LiteLLM.
+Live integration tests — make real LLM API calls via LiteLLM.
 
-These tests are skipped automatically when GEMINI_API_KEY is not set.
+Skipped automatically when MODEL_API_KEY is not set in .env.
 Run explicitly with:
 
     pytest src/test/integration/test_agent_live.py -v -m live
@@ -19,8 +19,8 @@ from agent.llm_client import LLMClient
 pytestmark = pytest.mark.live
 
 skip_if_no_key = pytest.mark.skipif(
-    not settings.gemini_api_key,
-    reason="GEMINI_API_KEY not set in .env — skipping live test",
+    not settings.model_api_key,
+    reason="MODEL_API_KEY not set in .env — skipping live test",
 )
 
 
@@ -41,7 +41,7 @@ async def live_db(tmp_path):
 
 
 @skip_if_no_key
-async def test_gemini_returns_text_for_empty_job_list(live_db):
+async def test_agent_returns_text_for_empty_job_list(live_db):
     """Agent queries an empty DB and Gemini returns a coherent text reply."""
     llm = LLMClient(model=settings.model)
     reply = await run(
@@ -54,7 +54,7 @@ async def test_gemini_returns_text_for_empty_job_list(live_db):
 
 
 @skip_if_no_key
-async def test_gemini_calls_query_jobs_tool(live_db):
+async def test_agent_calls_query_jobs_tool(live_db):
     """Gemini should recognise the intent and call query_jobs rather than hallucinate."""
     llm = LLMClient(model=settings.model)
     reply = await run(
@@ -67,7 +67,7 @@ async def test_gemini_calls_query_jobs_tool(live_db):
 
 
 @skip_if_no_key
-async def test_gemini_handles_job_mention_without_url(live_db):
+async def test_agent_handles_job_mention_without_url(live_db):
     """
     User mentions a job with no URL. The agent should either ask for confirmation /
     more details, or attempt log_job and receive a validation error — either way it
@@ -84,7 +84,7 @@ async def test_gemini_handles_job_mention_without_url(live_db):
 
 
 @skip_if_no_key
-async def test_gemini_handles_profile_question(live_db):
+async def test_agent_handles_profile_question(live_db):
     """Gemini should respond sensibly when asked about the user profile."""
     llm = LLMClient(model=settings.model)
     reply = await run(

@@ -18,8 +18,8 @@ def test_llm_client_uses_settings_model_by_default():
 
 
 def test_llm_client_accepts_model_override():
-    client = LLMClient(model="gpt-4o")
-    assert client.model == "gpt-4o"
+    client = LLMClient(model="test-model-override")
+    assert client.model == "test-model-override"
 
 
 # ── chat call ─────────────────────────────────────────────────────────────────
@@ -27,7 +27,7 @@ def test_llm_client_accepts_model_override():
 def test_llm_client_calls_litellm_completion():
     with patch("agent.llm_client.completion",
                return_value=_mock_response()) as mock_completion:
-        LLMClient(model="claude-sonnet-4-5").chat(
+        LLMClient(model="test-model").chat(
             [{"role": "user", "content": "hi"}], []
         )
     mock_completion.assert_called_once()
@@ -38,7 +38,7 @@ def test_llm_client_passes_messages_and_tools():
     tools    = [{"type": "function", "function": {"name": "test"}}]
     with patch("agent.llm_client.completion",
                return_value=_mock_response()) as mock_completion:
-        LLMClient(model="claude-sonnet-4-5").chat(messages, tools)
+        LLMClient(model="test-model").chat(messages, tools)
     kwargs = mock_completion.call_args.kwargs
     assert kwargs["messages"] == messages
     assert kwargs["tools"]    == tools
@@ -47,28 +47,28 @@ def test_llm_client_passes_messages_and_tools():
 def test_llm_client_passes_correct_model():
     with patch("agent.llm_client.completion",
                return_value=_mock_response()) as mock_completion:
-        LLMClient(model="gpt-4o").chat([{"role": "user", "content": "hi"}], [])
-    assert mock_completion.call_args.kwargs["model"] == "gpt-4o"
+        LLMClient(model="test-model-override").chat([{"role": "user", "content": "hi"}], [])
+    assert mock_completion.call_args.kwargs["model"] == "test-model-override"
 
 
 def test_llm_client_sets_tool_choice_auto():
     with patch("agent.llm_client.completion",
                return_value=_mock_response()) as mock_completion:
-        LLMClient(model="claude-sonnet-4-5").chat([], [])
+        LLMClient(model="test-model").chat([], [])
     assert mock_completion.call_args.kwargs["tool_choice"] == "auto"
 
 
 def test_llm_client_returns_response_object():
     mock_resp = _mock_response(content="pong")
     with patch("agent.llm_client.completion", return_value=mock_resp):
-        response = LLMClient(model="claude-sonnet-4-5").chat([], [])
+        response = LLMClient(model="test-model").chat([], [])
     assert response is mock_resp
 
 
 def test_llm_client_response_content_accessible():
     with patch("agent.llm_client.completion",
                return_value=_mock_response(content="You have 3 jobs.")):
-        response = LLMClient(model="claude-sonnet-4-5").chat([], [])
+        response = LLMClient(model="test-model").chat([], [])
     assert response.choices[0].message.content == "You have 3 jobs."
 
 
@@ -76,5 +76,5 @@ def test_llm_client_response_tool_calls_accessible():
     tool_call = MagicMock()
     with patch("agent.llm_client.completion",
                return_value=_mock_response(tool_calls=[tool_call])):
-        response = LLMClient(model="claude-sonnet-4-5").chat([], [])
+        response = LLMClient(model="test-model").chat([], [])
     assert response.choices[0].message.tool_calls == [tool_call]

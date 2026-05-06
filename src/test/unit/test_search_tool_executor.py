@@ -122,3 +122,43 @@ async def test_search_jobs_returns_empty_when_all_inserts_fail():
     data = json.loads(result)
     assert data["count"]    == 0
     assert data["inserted"] == []
+
+
+# ── scoring wired through tool executor ──────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_search_jobs_passes_score_to_insert_job():
+    """score_job must be called and its result forwarded to repo.insert_job — not silently defaulted."""
+    with patch("agent.tools.tavily_search", new_callable=AsyncMock, return_value=[{}]), \
+         patch("agent.tools.parse_results", return_value=FAKE_PARSED), \
+         patch("agent.tools.read_profile", return_value={"skills": ["python"]}), \
+         patch("agent.tools.repo.insert_job", new_callable=AsyncMock,
+               return_value=(_mock_job(), True)) as mock_insert:
+        await execute_tool("search_jobs", {"query": "data engineer"}, _make_db())
+
+    assert mock_insert.called
+    call_args = mock_insert.call_args
+    # insert_job(db, job, fp, score) — score is the 4th positional arg
+    assert len(call_args.args) >= 4, "score must be passed as positional arg to insert_job"
+    score = call_args.args[3]
+    assert isinstance(score, float), f"score must be a float, got {type(score)}"
+    assert 0.0 <= score <= 1.0, f"score out of range: {score}"
+
+
+@pytest.mark.asyncio
+async def test_search_jobs_score_reflects_profile_skills():
+    """When profile skills match the job description, score must be > 0.0."""
+    parsed_with_description = [{
+        "company": "GovTech", "role": "Data Engineer",
+        "url": "https://careers.gov.sg/1", "source": "tavily",
+        "notes": None, "description": "We use Python and SQL daily.",
+    }]
+    with patch("agent.tools.tavily_search", new_callable=AsyncMock, return_value=[{}]), \
+         patch("agent.tools.parse_results", return_value=parsed_with_description), \
+         patch("agent.tools.read_profile", return_value={"skills": ["python", "sql"]}), \
+         patch("agent.tools.repo.insert_job", new_callable=AsyncMock,
+               return_value=(_mock_job(), True)) as mock_insert:
+        await execute_tool("search_jobs", {"query": "data engineer"}, _make_db())
+
+    score = mock_insert.call_args.args[3]
+    assert score == 1.0, f"both skills match description — expected 1.0, got {score}"

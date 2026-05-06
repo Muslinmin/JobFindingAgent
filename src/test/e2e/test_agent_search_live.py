@@ -19,6 +19,7 @@ from app.db.database import create_tables
 from app.db import repository as repo
 from agent.agent import run
 from agent.llm_client import LLMClient
+from agent.profile import read_profile
 
 # Ensure loguru prints to stdout so pytest -s shows it
 logger.remove()
@@ -28,8 +29,8 @@ logger.add(sys.stdout, level="DEBUG", colorize=True,
 pytestmark = pytest.mark.live
 
 skip_if_no_keys = pytest.mark.skipif(
-    not settings.tavily_api_key or not settings.gemini_api_key,
-    reason="TAVILY_API_KEY or GEMINI_API_KEY not set in .env — skipping live e2e test",
+    not settings.tavily_api_key or not settings.model_api_key,
+    reason="TAVILY_API_KEY and MODEL_API_KEY must be set in .env — skipping live e2e test",
 )
 
 
@@ -109,3 +110,82 @@ async def test_agent_search_jobs_have_status_found(live_db):
     for job in jobs:
         logger.info(f"  {job['company']} — {job['role']} | status={job['status']}")
         assert job["status"] == "found"
+
+
+@skip_if_no_keys
+async def test_profile_skills_flow_into_search_and_scoring(live_db, tmp_path, monkeypatch):
+    """
+    Full pipeline e2e:
+      Turn 1  — user sets skills → agent calls update_profile → profile.json written
+      Turn 2  — user requests search → agent calls search_jobs → Tavily returns listings
+              → each job scored against profile skills and fingerprinted → inserted into DB
+      Turn 3  — same search repeated → dedup holds, job count unchanged
+    """
+    monkeypatch.setattr(settings, "profile_path", str(tmp_path / "profile.json"))
+
+    llm = LLMClient(model=settings.model)
+
+    # ── Turn 1: populate profile ──────────────────────────────────────────────
+    reply_1 = await run(
+        messages=[{
+            "role": "user",
+            "content": "I am a Python developer. My skills are Python, FastAPI, and Docker.",
+        }],
+        db=live_db,
+        llm=llm,
+    )
+    logger.info(f"[turn 1 reply]\n{reply_1}")
+
+    profile = read_profile()
+    logger.info(f"[profile] {profile}")
+    assert "skills" in profile, "profile.json must contain 'skills' after turn 1"
+    assert len(profile["skills"]) > 0, "skills list must not be empty"
+
+    await asyncio.sleep(10)  # avoid burst-hitting LLM rate limits between turns
+
+    # ── Turn 2: search for jobs ───────────────────────────────────────────────
+    reply_2 = await run(
+        messages=[{
+            "role": "user",
+            "content": "Find me Python backend engineer jobs in Singapore.",
+        }],
+        db=live_db,
+        llm=llm,
+    )
+    logger.info(f"[turn 2 reply]\n{reply_2}")
+
+    jobs = await repo.get_all_jobs(live_db)
+    logger.info(f"[db] {len(jobs)} job(s) after search:")
+    for job in jobs:
+        logger.info(
+            f"  {job['company']} — {job['role']} "
+            f"| score={job['score']:.2f} | fp={job['fingerprint'][:12]}..."
+        )
+
+    assert len(jobs) > 0, "at least one job must be inserted after search"
+
+    await asyncio.sleep(10)  # avoid burst-hitting LLM rate limits between turns
+
+    for job in jobs:
+        assert isinstance(job["score"], float), \
+            f"score must be a float, got {type(job['score'])}"
+        assert 0.0 <= job["score"] <= 1.0, \
+            f"score out of range: {job['score']}"
+        assert job["fingerprint"] is not None and len(job["fingerprint"]) == 64, \
+            f"expected 64-char hex fingerprint, got '{job['fingerprint']}'"
+
+    # ── Turn 3: dedup — same search must not grow the table ──────────────────
+    count_before = len(jobs)
+    await run(
+        messages=[{
+            "role": "user",
+            "content": "Find me Python backend engineer jobs in Singapore.",
+        }],
+        db=live_db,
+        llm=llm,
+    )
+    jobs_after = await repo.get_all_jobs(live_db)
+    logger.info(f"[dedup] count before={count_before}, after={len(jobs_after)}")
+    assert len(jobs_after) == count_before, (
+        f"dedup failed: job count grew from {count_before} to {len(jobs_after)}"
+    )

@@ -9,6 +9,7 @@ from app.db import repository as repo
 from app.models.enums import ApplicationStatus, InvalidTransitionError
 from app.models.job import JobCreate
 from scoring.fingerprint import fingerprint_job
+from scoring.scorer import score_job
 from agent.profile import read_profile, write_profile
 from scraper.tavily_client import search as tavily_search
 from scraper.parser import parse_results
@@ -174,12 +175,16 @@ async def _search_jobs(args: dict, db) -> str:
     raw_results = await tavily_search(query)
     parsed      = parse_results(raw_results)
 
+    profile  = read_profile()
+    keywords = profile.get("skills", [])
+
     inserted = []
     for record in parsed:
         try:
             job_data     = JobCreate(**record)
             fp           = fingerprint_job(job_data.company, job_data.role, str(job_data.url))
-            job, created = await repo.insert_job(db, job_data, fp)
+            score        = score_job(job_data.description or "", keywords)
+            job, created = await repo.insert_job(db, job_data, fp, score)
             inserted.append({"id": job["id"], "company": job["company"],
                               "role": job["role"], "created": created})
             status = "NEW" if created else "duplicate"
