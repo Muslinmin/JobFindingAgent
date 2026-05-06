@@ -12,11 +12,11 @@ Stack: Tavily Search API (external), `httpx` (HTTP client), pure Python (parser)
 
 ## Progress & TODO
 
-**Current phase:** Not started
+**Current phase:** Phase 2 — Tavily Client
 
 | Phase | Status | Notes |
 |---|---|---|
-| Phase 1 — Parser | [ ] TODO | |
+| Phase 1 — Parser | [x] Done | `scraper/parser.py` + `test_parser.py` — 19/19 tests passing |
 | Phase 2 — Tavily Client | [ ] TODO | |
 | Phase 3 — Wire `_search_jobs` | [ ] TODO | |
 | Phase 4 — Scheduler | [ ] TODO | |
@@ -42,7 +42,7 @@ job_tracker/
 ├── app/
 │   ├── config.py            # TAVILY_API_KEY added
 │   └── main.py              # APScheduler wired into lifespan hook
-├── tests/
+├── test/
 │   ├── unit/
 │   │   ├── test_parser.py
 │   │   ├── test_tavily_client.py
@@ -981,8 +981,8 @@ All other dependencies (`fastapi`, `aiosqlite`, `pydantic`, `pydantic-settings`,
 
 ## Implementation Checklist
 
-- [ ] **Phase 1 — Parser** — `scraper/parser.py` + `tests/unit/test_parser.py`
-- [ ] **Phase 2 — Tavily Client** — `scraper/tavily_client.py` + `tests/unit/test_tavily_client.py` + config additions
-- [ ] **Phase 3 — Wire `_search_jobs`** — update `agent/tools.py` + `tests/unit/test_search_tool_executor.py`
+- [ ] **Phase 1 — Parser** — `scraper/parser.py` + `test/unit/test_parser.py`
+- [ ] **Phase 2 — Tavily Client** — `scraper/tavily_client.py` + `test/unit/test_tavily_client.py` + config additions
+- [ ] **Phase 3 — Wire `_search_jobs`** — update `agent/tools.py` + `test/unit/test_search_tool_executor.py`
 - [ ] **Phase 4 — Scheduler** — `app/main.py` lifespan additions + scheduler registration test
-- [ ] **Phase 5 — Integration and E2E** — `tests/integration/test_scraper_pipeline.py` + `tests/integration/test_agent_search_tool.py` + `tests/e2e/test_search_pipeline.py`
+- [ ] **Phase 5 — Integration and E2E** — `test/integration/test_scraper_pipeline.py` + `tests/integration/test_agent_search_tool.py` + `tests/e2e/test_search_pipeline.py`
