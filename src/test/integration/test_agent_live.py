@@ -7,6 +7,7 @@ Run explicitly with:
     pytest src/test/integration/test_agent_live.py -v -m live
 """
 
+import asyncio
 import pytest
 import aiosqlite
 
@@ -21,6 +22,13 @@ skip_if_no_key = pytest.mark.skipif(
     not settings.gemini_api_key,
     reason="GEMINI_API_KEY not set in .env — skipping live test",
 )
+
+
+@pytest.fixture(autouse=True)
+async def rate_limit_delay():
+    """Pause between live tests to avoid hitting LLM provider rate limits."""
+    yield
+    await asyncio.sleep(15)
 
 
 @pytest.fixture

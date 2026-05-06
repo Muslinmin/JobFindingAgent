@@ -12,15 +12,16 @@ Stack: Tavily Search API (external), `httpx` (HTTP client), pure Python (parser)
 
 ## Progress & TODO
 
-**Current phase:** Phase 3 — Wire `_search_jobs`
+**Current phase:** Phase 4 — Live Validation
 
 | Phase | Status | Notes |
 |---|---|---|
 | Phase 1 — Parser | [x] Done | `scraper/parser.py` + `test_parser.py` — 19/19 tests passing |
 | Phase 2 — Tavily Client | [x] Done | `scraper/tavily_client.py` + `test_tavily_client.py` — 12/12 tests passing |
-| Phase 3 — Wire `_search_jobs` | [ ] TODO | |
-| Phase 4 — Scheduler | [ ] TODO | |
-| Phase 5 — Integration & E2E Tests | [ ] TODO | |
+| Phase 3 — Wire `_search_jobs` | [x] Done | `_search_jobs` implemented + `test_search_tool_executor.py` — all tests passing |
+| Phase 4 — Live Validation | [x] Done | `test_tavily_live.py` + `test_agent_search_live.py` — 4/4 passing. Pydantic serialization warning on `ChatCompletionMessageToolCall` (LiteLLM/Gemini type mismatch) — non-breaking, tests pass. Rate-limit guards (15s delay) added to all live test files. |
+| Phase 5 — Scheduler | [ ] TODO | Wire APScheduler into FastAPI lifespan hook — daily scrape job |
+| Phase 6 — E2E Test with Scheduler | [ ] TODO | Verify scheduler fires, calls scraper pipeline, and inserts records into DB |
 
 **Blockers:**
 - None
@@ -981,8 +982,9 @@ All other dependencies (`fastapi`, `aiosqlite`, `pydantic`, `pydantic-settings`,
 
 ## Implementation Checklist
 
-- [ x] **Phase 1 — Parser** — `scraper/parser.py` + `test/unit/test_parser.py`
-- [ ] **Phase 2 — Tavily Client** — `scraper/tavily_client.py` + `test/unit/test_tavily_client.py` + config additions
-- [ ] **Phase 3 — Wire `_search_jobs`** — update `agent/tools.py` + `test/unit/test_search_tool_executor.py`
-- [ ] **Phase 4 — Scheduler** — `app/main.py` lifespan additions + scheduler registration test
-- [ ] **Phase 5 — Integration and E2E** — `test/integration/test_scraper_pipeline.py` + `tests/integration/test_agent_search_tool.py` + `tests/e2e/test_search_pipeline.py`
+- [x] **Phase 1 — Parser** — `scraper/parser.py` + `test/unit/test_parser.py`
+- [x] **Phase 2 — Tavily Client** — `scraper/tavily_client.py` + `test/unit/test_tavily_client.py` + config additions
+- [x] **Phase 3 — Wire `_search_jobs`** — update `agent/tools.py` + `test/unit/test_search_tool_executor.py`
+- [x] **Phase 4 — Live Validation** — `test/integration/test_tavily_live.py` + `test/e2e/test_agent_search_live.py` — 4/4 passing
+- [ ] **Phase 5 — Scheduler** — `app/main.py` lifespan additions + scheduler registration test
+- [ ] **Phase 6 — E2E Test with Scheduler** — verify scheduler fires, calls scraper pipeline, inserts records into DB

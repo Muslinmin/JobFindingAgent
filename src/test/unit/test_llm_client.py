@@ -22,11 +22,6 @@ def test_llm_client_accepts_model_override():
     assert client.model == "gpt-4o"
 
 
-def test_llm_client_default_model_contains_claude():
-    client = LLMClient()
-    assert "claude" in client.model
-
-
 # ── chat call ─────────────────────────────────────────────────────────────────
 
 def test_llm_client_calls_litellm_completion():

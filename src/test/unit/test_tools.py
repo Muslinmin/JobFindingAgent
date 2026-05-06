@@ -203,24 +203,6 @@ async def test_update_profile_result_contains_merged_profile():
     assert profile["experience_years"] == 3
 
 
-# ── search_jobs ───────────────────────────────────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_search_jobs_returns_stub_while_unimplemented():
-    result = await execute_tool("search_jobs", {"query": "data engineer Singapore"},
-                                db=MagicMock())
-    parsed = json.loads(result)
-    assert parsed["results"] == []
-    assert "note" in parsed
-
-
-@pytest.mark.asyncio
-async def test_search_jobs_stub_note_mentions_week_3():
-    result = await execute_tool("search_jobs", {"query": "Python jobs"}, db=MagicMock())
-    parsed = json.loads(result)
-    assert "3" in parsed["note"]
-
-
 # ── unknown tool ──────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio

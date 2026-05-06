@@ -1,0 +1,124 @@
+import json
+import pytest
+from unittest.mock import AsyncMock, patch, MagicMock
+
+from agent.tools import execute_tool
+
+
+# ── helpers ───────────────────────────────────────────────────────────────────
+
+def _make_db():
+    return MagicMock()
+
+
+def _mock_job(id=1, company="GovTech", role="Data Engineer"):
+    return {
+        "id": id, "company": company, "role": role,
+        "url": "https://careers.gov.sg/1", "status": "found",
+        "source": "tavily", "notes": None, "date_logged": "2026-01-01",
+    }
+
+
+FAKE_PARSED = [
+    {"company": "GovTech", "role": "Data Engineer",
+     "url": "https://careers.gov.sg/1", "source": "tavily", "notes": None},
+]
+
+
+# ── return shape ──────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_search_jobs_returns_json_string():
+    with patch("agent.tools.tavily_search", new_callable=AsyncMock, return_value=[]), \
+         patch("agent.tools.parse_results", return_value=[]):
+        result = await execute_tool("search_jobs", {"query": "data engineer"}, _make_db())
+    assert isinstance(result, str)
+    data = json.loads(result)
+    assert "query"    in data
+    assert "found"    in data
+    assert "inserted" in data
+    assert "count"    in data
+
+
+@pytest.mark.asyncio
+async def test_search_jobs_result_includes_correct_found_and_count():
+    with patch("agent.tools.tavily_search", new_callable=AsyncMock, return_value=[{}]), \
+         patch("agent.tools.parse_results", return_value=FAKE_PARSED), \
+         patch("agent.tools.repo.insert_job", new_callable=AsyncMock,
+               return_value=(_mock_job(), True)):
+        result = await execute_tool("search_jobs", {"query": "data engineer"}, _make_db())
+    data = json.loads(result)
+    assert data["found"] == 1
+    assert data["count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_search_jobs_result_echoes_query():
+    with patch("agent.tools.tavily_search", new_callable=AsyncMock, return_value=[]), \
+         patch("agent.tools.parse_results", return_value=[]):
+        result = await execute_tool("search_jobs", {"query": "fintech backend"}, _make_db())
+    assert json.loads(result)["query"] == "fintech backend"
+
+
+# ── delegation ────────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_search_jobs_delegates_query_to_tavily():
+    mock_search = AsyncMock(return_value=[])
+    with patch("agent.tools.tavily_search", mock_search), \
+         patch("agent.tools.parse_results", return_value=[]):
+        await execute_tool("search_jobs", {"query": "backend engineer SG"}, _make_db())
+    mock_search.assert_called_once_with("backend engineer SG")
+
+
+@pytest.mark.asyncio
+async def test_search_jobs_uses_settings_query_when_none_provided():
+    mock_search = AsyncMock(return_value=[])
+    with patch("agent.tools.tavily_search", mock_search), \
+         patch("agent.tools.parse_results", return_value=[]), \
+         patch("agent.tools.settings") as mock_settings:
+        mock_settings.scrape_query = "software engineer Singapore"
+        await execute_tool("search_jobs", {}, _make_db())
+    mock_search.assert_called_once_with("software engineer Singapore")
+
+
+# ── empty / graceful ──────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_search_jobs_returns_zero_count_when_tavily_empty():
+    with patch("agent.tools.tavily_search", new_callable=AsyncMock, return_value=[]), \
+         patch("agent.tools.parse_results", return_value=[]):
+        result = await execute_tool("search_jobs", {"query": "anything"}, _make_db())
+    data = json.loads(result)
+    assert data["count"]    == 0
+    assert data["inserted"] == []
+
+
+# ── insert failure resilience ─────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_search_jobs_continues_when_one_insert_fails():
+    two_records = [
+        {"company": "A", "role": "Engineer", "url": "https://a.com/1", "source": "tavily", "notes": None},
+        {"company": "B", "role": "Engineer", "url": "https://b.com/2", "source": "tavily", "notes": None},
+    ]
+    with patch("agent.tools.tavily_search", new_callable=AsyncMock, return_value=[{}, {}]), \
+         patch("agent.tools.parse_results", return_value=two_records), \
+         patch("agent.tools.repo.insert_job", new_callable=AsyncMock,
+               side_effect=[Exception("DB error"), (_mock_job(id=2, company="B"), True)]):
+        result = await execute_tool("search_jobs", {"query": "engineer"}, _make_db())
+    data = json.loads(result)
+    assert data["found"] == 2
+    assert data["count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_search_jobs_returns_empty_when_all_inserts_fail():
+    with patch("agent.tools.tavily_search", new_callable=AsyncMock, return_value=[{}]), \
+         patch("agent.tools.parse_results", return_value=FAKE_PARSED), \
+         patch("agent.tools.repo.insert_job", new_callable=AsyncMock,
+               side_effect=Exception("DB down")):
+        result = await execute_tool("search_jobs", {"query": "data engineer"}, _make_db())
+    data = json.loads(result)
+    assert data["count"]    == 0
+    assert data["inserted"] == []

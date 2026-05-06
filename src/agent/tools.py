@@ -1,13 +1,17 @@
 import inspect
 import json
 
+from loguru import logger
 from pydantic import ValidationError
 
+from app.config import settings
 from app.db import repository as repo
 from app.models.enums import ApplicationStatus, InvalidTransitionError
 from app.models.job import JobCreate
 from app.routes.jobs import make_fingerprint
 from agent.profile import read_profile, write_profile
+from scraper.tavily_client import search as tavily_search
+from scraper.parser import parse_results
 
 
 TOOL_DEFINITIONS = [
@@ -116,7 +120,7 @@ async def execute_tool(tool_name: str, arguments: dict, db) -> str:
         "update_status":  lambda: _update_status(arguments, db),
         "query_jobs":     lambda: _query_jobs(arguments, db),
         "update_profile": lambda: _update_profile(arguments),
-        "search_jobs":    lambda: _search_jobs(arguments),
+        "search_jobs":    lambda: _search_jobs(arguments, db),
     }
     handler = handlers.get(tool_name)
     if not handler:
@@ -165,8 +169,28 @@ def _update_profile(args: dict) -> str:
     return json.dumps({"status": "profile updated", "profile": updated})
 
 
-def _search_jobs(args: dict) -> str:
+async def _search_jobs(args: dict, db) -> str:
+    query       = args.get("query") or settings.scrape_query
+    raw_results = await tavily_search(query)
+    parsed      = parse_results(raw_results)
+
+    inserted = []
+    for record in parsed:
+        try:
+            job_data     = JobCreate(**record)
+            fp           = make_fingerprint(job_data)
+            job, created = await repo.insert_job(db, job_data, fp)
+            inserted.append({"id": job["id"], "company": job["company"],
+                              "role": job["role"], "created": created})
+            status = "NEW" if created else "duplicate"
+            logger.info(f"[search_jobs] [{status}] {job['company']} — {job['role']} | {job['url']}")
+        except Exception as e:
+            logger.warning(f"search_jobs: failed to insert record: {e}")
+
+    logger.info(f"[search_jobs] query='{query}' found={len(parsed)} inserted={len(inserted)}")
     return json.dumps({
-        "results": [],
-        "note": "Search not yet available. Scraping layer coming in Week 3.",
+        "query":    query,
+        "found":    len(parsed),
+        "inserted": inserted,
+        "count":    len(inserted),
     })
