@@ -9,6 +9,7 @@ class JobCreate(BaseModel):
     url: HttpUrl
     source: str = "manual"
     notes: str | None = None
+    description: str | None = None
 
 
 class JobUpdate(BaseModel):
@@ -24,5 +25,7 @@ class JobResponse(BaseModel):
     status: ApplicationStatus
     source: str
     notes: str | None
+    description: str | None
+    score: float
     date_logged: datetime
     created: bool

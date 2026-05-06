@@ -8,7 +8,7 @@ from app.config import settings
 from app.db import repository as repo
 from app.models.enums import ApplicationStatus, InvalidTransitionError
 from app.models.job import JobCreate
-from app.routes.jobs import make_fingerprint
+from scoring.fingerprint import fingerprint_job
 from agent.profile import read_profile, write_profile
 from scraper.tavily_client import search as tavily_search
 from scraper.parser import parse_results
@@ -137,7 +137,7 @@ async def _log_job(args: dict, db) -> str:
         job = JobCreate(**args)
     except ValidationError as e:
         return json.dumps({"error": f"Invalid job data: {e.errors()}"})
-    fp = make_fingerprint(job)
+    fp = fingerprint_job(job.company, job.role, str(job.url))
     record, created = await repo.insert_job(db, job, fp)
     return json.dumps({"created": created, "job": record})
 
@@ -178,7 +178,7 @@ async def _search_jobs(args: dict, db) -> str:
     for record in parsed:
         try:
             job_data     = JobCreate(**record)
-            fp           = make_fingerprint(job_data)
+            fp           = fingerprint_job(job_data.company, job_data.role, str(job_data.url))
             job, created = await repo.insert_job(db, job_data, fp)
             inserted.append({"id": job["id"], "company": job["company"],
                               "role": job["role"], "created": created})

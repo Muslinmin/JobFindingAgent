@@ -13,6 +13,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     status      TEXT    NOT NULL DEFAULT 'found',
     source      TEXT    NOT NULL DEFAULT 'manual',
     notes       TEXT,
+    description TEXT,
+    score       REAL    NOT NULL DEFAULT 0.0,
     fingerprint TEXT    NOT NULL UNIQUE,
     date_logged TEXT    NOT NULL
 )

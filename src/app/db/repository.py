@@ -10,12 +10,12 @@ def _row_to_dict(row: aiosqlite.Row) -> dict:
     return dict(row)
 
 
-async def insert_job(db: aiosqlite.Connection, job: JobCreate, fingerprint: str) -> tuple[dict, bool]:
+async def insert_job(db: aiosqlite.Connection, job: JobCreate, fingerprint: str, score: float = 0.0) -> tuple[dict, bool]:
     try:
         cursor = await db.execute(
             """
-            INSERT INTO jobs (company, role, url, status, source, notes, fingerprint, date_logged)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO jobs (company, role, url, status, source, notes, description, score, fingerprint, date_logged)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 job.company,
@@ -24,6 +24,8 @@ async def insert_job(db: aiosqlite.Connection, job: JobCreate, fingerprint: str)
                 ApplicationStatus.FOUND.value,
                 job.source,
                 job.notes,
+                job.description,
+                score,
                 fingerprint,
                 datetime.now(timezone.utc).isoformat(),
             ),

@@ -11,7 +11,8 @@ from app.db import repository as repo
 from app.db.database import create_tables, get_db
 from app.models.job import JobCreate
 from app.routes.chat import router as chat_router
-from app.routes.jobs import make_fingerprint, router as jobs_router
+from app.routes.jobs import router as jobs_router
+from scoring.fingerprint import fingerprint_job
 from scraper.parser import parse_results
 from scraper.tavily_client import search as tavily_search
 
@@ -35,7 +36,7 @@ async def _scheduled_scrape() -> None:
         for record in jobs:
             try:
                 job_data   = JobCreate(**record)
-                fp         = make_fingerprint(job_data)
+                fp         = fingerprint_job(job_data.company, job_data.role, str(job_data.url))
                 _, created = await repo.insert_job(db, job_data, fp)
                 if created:
                     inserted_count += 1

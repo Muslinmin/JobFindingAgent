@@ -1,5 +1,3 @@
-import hashlib
-
 import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
@@ -14,19 +12,22 @@ from app.db.repository import (
 )
 from app.models.enums import ApplicationStatus, InvalidTransitionError
 from app.models.job import JobCreate, JobResponse, JobUpdate
+from agent.profile import read_profile
+from scoring.fingerprint import fingerprint_job
+from scoring.scorer import score_job
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
 
-def make_fingerprint(job: JobCreate) -> str:
-    raw = f"{job.company.lower()}|{job.role.lower()}|{str(job.url).lower()}"
-    return hashlib.sha256(raw.encode()).hexdigest()
-
-
 @router.post("", status_code=201, response_model=JobResponse)
 async def create_job(job: JobCreate, db: aiosqlite.Connection = Depends(get_db)):
-    fp = make_fingerprint(job)
-    record, created = await insert_job(db, job, fp)
+    profile  = read_profile()
+    keywords = profile.get("skills", [])
+
+    fp    = fingerprint_job(job.company, job.role, str(job.url))
+    score = score_job(job.description or "", keywords)
+
+    record, created = await insert_job(db, job, fp, score)
     return JobResponse(**record, created=created)
 
 
