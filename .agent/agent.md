@@ -1066,3 +1066,14 @@ All other dependencies (`fastapi`, `aiosqlite`, `pydantic`, `loguru`, `httpx`, `
 | LiteLLM / provider failure | Exception propagates to FastAPI → 500 response, logged |
 | Profile write failure | Exception propagates — profile remains unchanged |
 | Missing `profile.json` | `read_profile()` returns `{}` — agent starts fresh |
+
+---
+
+## Implementation Checklist
+
+- [x] **Phase 1 — Profile Manager** — `agent/profile.py` + `tests/unit/test_profile.py`
+- [ ] **Phase 2 — Tool Definitions and Executors** — `agent/tools.py` + `tests/unit/test_tools.py`
+- [ ] **Phase 3 — LLM Client** — `agent/llm_client.py` + `tests/unit/test_llm_client.py`
+- [ ] **Phase 4 — System Prompt** — `agent/prompts/system.md` + `tests/unit/test_prompt_rendering.py`
+- [ ] **Phase 5 — ReAct Loop** — `agent/agent.py` + `tests/integration/test_agent.py`
+- [ ] **Phase 6 — FastAPI Integration** — `app/routes/chat.py` + `tests/integration/test_chat_route.py`
