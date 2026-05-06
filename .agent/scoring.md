@@ -11,7 +11,11 @@ Two pure functions. No I/O, no DB calls, no side effects.
 | `score_job` | job description `str`, resume keywords `list[str]` | `float` between `0.0` and `1.0` |
 | `fingerprint_job` | company `str`, role `str`, url `str` | SHA-256 hex digest `str` |
 
-Both are wired into the ingestion pipeline — every job that enters via `POST /jobs` gets scored and fingerprinted before the DB write.
+Both are wired into **two** ingestion paths:
+- `POST /jobs` route handler — for manually logged jobs
+- `_search_jobs` tool executor — for jobs discovered via Tavily search
+
+Every job entering either path gets scored and fingerprinted before the DB write.
 
 ---
 
@@ -23,10 +27,13 @@ scoring/
 ├── scorer.py          # score_job()
 └── fingerprint.py     # fingerprint_job()
 
-tests/
-└── test_scoring/
-    ├── test_scorer.py
-    └── test_fingerprint.py
+src/test/
+├── unit/
+│   ├── test_scorer.py
+│   ├── test_fingerprint.py
+│   └── test_search_tool_executor.py   # asserts score arg is passed to insert_job
+└── integration/
+    └── test_scoring_ingestion.py      # POST /jobs route: score + dedup via HTTP
 ```
 
 ---
@@ -121,35 +128,48 @@ CASE: output is a 64-character hex string
 
 ## Wiring Into Ingestion
 
-The scraper calls `POST /jobs`. Before the repository executes the insert, the route handler must:
+Scoring and fingerprinting run in two places. Both follow the same pattern:
 
-1. Call `fingerprint_job(company, role, url)` — attach result to the record as `fingerprint`.
-2. Call `score_job(description, keywords)` — attach result as `score`.
-3. Pass the enriched record to `repo.insert_job()`.
+1. Call `fingerprint_job(company, role, url)` — unique identity of the record.
+2. Call `score_job(description, keywords)` — relevance against profile skills.
+3. Pass both to `repo.insert_job(db, job, fingerprint, score)`.
 
-The `fingerprint` column already has a `UNIQUE` constraint in the DB. A duplicate insert returns the existing record — no error raised to the caller.
+The `fingerprint` column has a `UNIQUE` constraint in the DB. A duplicate insert returns the existing record silently — no error raised to the caller.
+
+### Path 1 — `POST /jobs` route handler (`app/routes/jobs.py`)
+
+Called when a job is manually logged via the API.
+
+```python
+profile  = read_profile()
+keywords = profile.get("skills", [])
+fp    = fingerprint_job(job.company, job.role, str(job.url))
+score = score_job(job.description or "", keywords)
+record, created = await insert_job(db, job, fp, score)
+```
+
+### Path 2 — `_search_jobs` tool executor (`agent/tools.py`)
+
+Called when the agent runs a Tavily search. Keywords are read once per search call and applied to every result in the batch.
+
+```python
+profile  = read_profile()
+keywords = profile.get("skills", [])
+for record in parsed:
+    fp    = fingerprint_job(job.company, job.role, str(job.url))
+    score = score_job(job.description or "", keywords)
+    await repo.insert_job(db, job, fp, score)
+```
 
 ### Where keywords come from
 
 Keywords are read from `profile.json` at call time — specifically the `skills` field. This is the same profile the agent builds conversationally. When the user tells the agent their skills, the profile is updated, and the scorer automatically reflects the change on the next ingestion run.
 
-```python
-from scoring.fingerprint import fingerprint_job
-from scoring.scorer import score_job
-from agent.profile import read_profile
-
-profile  = read_profile()
-keywords = profile.get("skills", [])
-
-job.fingerprint = fingerprint_job(job.company, job.role, job.url)
-job.score       = score_job(job.description, keywords)
-```
-
 If `profile.json` does not exist or `skills` is absent, `keywords` defaults to `[]` and every job scores `0.0` — no error raised.
 
-### Where to add the calls
+### Description field and scoring
 
-In the `POST /jobs` route handler (or in the repository's `insert_job` method if you prefer to centralise it there — pick one place and be consistent).
+The scorer receives `job.description`, which is populated by the scraper parser from Tavily's `content` field. If Tavily returns only a URL with no content snippet, `description` is `None` and the job scores `0.0`. This is expected — a missing description means there is nothing to match against.
 
 ---
 
@@ -171,12 +191,22 @@ The `score_job` signature is the stable interface. Any future upgrade (TF-IDF, e
 
 ---
 
+## Known Limitations
+
+Tavily returns job board search result pages (LinkedIn, Indeed, Glassdoor) rather than individual job postings. The content snippets are short and generic, so scores tend to be low (e.g. `0.33` when one of three skills appears in the snippet). Improving score fidelity requires deeper content extraction — a future scraper enhancement.
+
+---
+
 ## Definition of Done
 
-- [x] `test_scorer.py` — all cases listed above pass, 100% branch coverage on `scorer.py`
-- [x] `test_fingerprint.py` — all cases listed above pass, 100% branch coverage on `fingerprint.py`
+- [x] `test_scorer.py` — all cases pass, 100% branch coverage on `scorer.py`
+- [x] `test_fingerprint.py` — all cases pass, 100% branch coverage on `fingerprint.py`
 - [x] `fingerprint` and `score` fields populated on every record entering `POST /jobs`
+- [x] `fingerprint` and `score` fields populated on every record inserted via `_search_jobs` tool
+- [x] Unit test asserts `score` arg is explicitly passed to `repo.insert_job` in `_search_jobs`
 - [x] Duplicate insert returns existing record, no error
 - [x] Keywords sourced from `profile.get("skills", [])` — no hardcoding, no `.env` config
 - [x] Empty or missing `skills` in profile results in score `0.0`, no error
+- [x] `description` field (not `notes`) used as scorer input — parser verified by unit tests
 - [x] No direct DB calls anywhere inside `scorer.py` or `fingerprint.py`
+- [x] E2e test confirms full pipeline: profile skills → Tavily search → scored jobs → dedup
