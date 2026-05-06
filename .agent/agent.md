@@ -1076,4 +1076,4 @@ All other dependencies (`fastapi`, `aiosqlite`, `pydantic`, `loguru`, `httpx`, `
 - [x] **Phase 3 — LLM Client** — `agent/llm_client.py` + `tests/unit/test_llm_client.py`
 - [x] **Phase 4 — System Prompt** — `agent/prompts/system.md` + `tests/unit/test_prompt_rendering.py`
 - [x] **Phase 5 — ReAct Loop** — `agent/agent.py` + `tests/integration/test_agent.py`
-- [ ] **Phase 6 — FastAPI Integration** — `app/routes/chat.py` + `tests/integration/test_chat_route.py`
+- [x] **Phase 6 — FastAPI Integration** — `app/routes/chat.py` + `tests/integration/test_chat_route.py`

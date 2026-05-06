@@ -243,6 +243,16 @@ Week 5   Frontend           Streamlit dashboard, APScheduler digest and scrape j
 
 ---
 
+## Build Checklist
+
+- [x] **Week 1 — Backend API** — Models, DB, repository, CRUD routes, TDD
+- [x] **Week 2 — Agent Brain** — LiteLLM, ReAct loop, profile manager, tool executors, `POST /chat`
+- [ ] **Week 3 — Scraping Layer** — Tavily integration, parsing, rate limiting
+- [ ] **Week 4 — Scoring & Dedup** — Scoring function, fingerprinting, wired into ingestion
+- [ ] **Week 5 — Frontend** — Streamlit dashboard, APScheduler digest and scrape jobs
+
+---
+
 ## Documentation Map
 
 | File | Covers |
