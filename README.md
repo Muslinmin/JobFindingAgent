@@ -4,7 +4,7 @@ An agentic job application tracker. Interact in natural language — the system 
 
 ---
 
-## Roadmap to v1.0.0
+## Roadmap to v0.5.0
 
 This project is built in layers. Each layer is fully tested before the next begins. The checklist below tracks progress toward the first stable release.
 
