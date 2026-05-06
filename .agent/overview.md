@@ -237,7 +237,7 @@ Each layer is built, tested, and stable before the next is started. Later layers
 Week 1   Backend API        Models, DB, repository, CRUD routes, TDD (DONE AND TESTED)
 Week 2   Agent Brain        LiteLLM, ReAct loop, profile manager, POST /chat (DONE AND TESTED)
 Week 3   Scraping Layer     Tavily integration, parsing, rate limiting (DONE AND TESTED)
-Week 4   Scoring & Dedup    Scoring function, fingerprinting, wired into ingestion
+Week 4   Scoring & Dedup    Scoring function, fingerprinting, wired into ingestion (DONE AND TESTED)
 Week 5   Frontend           Streamlit dashboard, APScheduler digest and scrape jobs
 ```
 
@@ -248,7 +248,7 @@ Week 5   Frontend           Streamlit dashboard, APScheduler digest and scrape j
 - [x] **Week 1 — Backend API** — Models, DB, repository, CRUD routes, TDD
 - [x] **Week 2 — Agent Brain** — LiteLLM, ReAct loop, profile manager, tool executors, `POST /chat`
 - [x] **Week 3 — Scraping Layer** — Tavily client, parser, `_search_jobs` wired, APScheduler lifespan hook, live validation
-- [ ] **Week 4 — Scoring & Dedup** — Scoring function, fingerprinting, wired into ingestion
+- [x] **Week 4 — Scoring & Dedup** — Scoring function, fingerprinting, wired into both ingestion paths (`POST /jobs` + `_search_jobs`), parser `description` fix, e2e test verified
 - [ ] **Week 5 — Frontend** — Streamlit dashboard, APScheduler digest and scrape jobs
 
 ---
