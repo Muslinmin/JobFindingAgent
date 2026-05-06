@@ -1,9 +1,19 @@
-from loguru import logger
+from contextlib import asynccontextmanager
+
+import aiosqlite
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.interval import IntervalTrigger
 from fastapi import FastAPI
+from loguru import logger
 
 from app.config import settings
-from app.routes.jobs import router as jobs_router
+from app.db import repository as repo
+from app.db.database import create_tables, get_db
+from app.models.job import JobCreate
 from app.routes.chat import router as chat_router
+from app.routes.jobs import make_fingerprint, router as jobs_router
+from scraper.parser import parse_results
+from scraper.tavily_client import search as tavily_search
 
 logger.add(
     "logs/app.log",
@@ -13,6 +23,49 @@ logger.add(
     format="{time} | {level} | {module} | {message}",
 )
 
-app = FastAPI()
+
+async def _scheduled_scrape() -> None:
+    logger.info(f"Scheduled scrape starting — query: '{settings.scrape_query}'")
+    raw  = await tavily_search(settings.scrape_query)
+    jobs = parse_results(raw)
+    logger.info(f"Scheduled scrape: {len(jobs)} results from Tavily")
+
+    inserted_count = 0
+    async for db in get_db():
+        for record in jobs:
+            try:
+                job_data   = JobCreate(**record)
+                fp         = make_fingerprint(job_data)
+                _, created = await repo.insert_job(db, job_data, fp)
+                if created:
+                    inserted_count += 1
+            except Exception as e:
+                logger.warning(f"Scheduled scrape: failed to insert record: {e}")
+
+    logger.info(f"Scheduled scrape complete — {inserted_count} new records inserted")
+
+
+scheduler = AsyncIOScheduler()
+
+
+@asynccontextmanager
+async def lifespan(app):
+    async with aiosqlite.connect(settings.db_path) as conn:
+        await create_tables(conn)
+
+    scheduler.add_job(
+        _scheduled_scrape,
+        trigger=IntervalTrigger(hours=24),
+        id="daily_scrape",
+        replace_existing=True,
+    )
+    scheduler.start()
+    logger.info("APScheduler started — daily scrape job registered")
+    yield
+    scheduler.shutdown()
+    logger.info("APScheduler stopped")
+
+
+app = FastAPI(lifespan=lifespan)
 app.include_router(jobs_router)
 app.include_router(chat_router)

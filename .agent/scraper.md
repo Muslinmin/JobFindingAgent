@@ -12,7 +12,7 @@ Stack: Tavily Search API (external), `httpx` (HTTP client), pure Python (parser)
 
 ## Progress & TODO
 
-**Current phase:** Phase 4 — Live Validation
+**Current phase:** Complete
 
 | Phase | Status | Notes |
 |---|---|---|
@@ -20,13 +20,29 @@ Stack: Tavily Search API (external), `httpx` (HTTP client), pure Python (parser)
 | Phase 2 — Tavily Client | [x] Done | `scraper/tavily_client.py` + `test_tavily_client.py` — 12/12 tests passing |
 | Phase 3 — Wire `_search_jobs` | [x] Done | `_search_jobs` implemented + `test_search_tool_executor.py` — all tests passing |
 | Phase 4 — Live Validation | [x] Done | `test_tavily_live.py` + `test_agent_search_live.py` — 4/4 passing. Pydantic serialization warning on `ChatCompletionMessageToolCall` (LiteLLM/Gemini type mismatch) — non-breaking, tests pass. Rate-limit guards (15s delay) added to all live test files. |
-| Phase 5 — Scheduler | [ ] TODO | Wire APScheduler into FastAPI lifespan hook — daily scrape job |
-| Phase 6 — E2E Test with Scheduler | [ ] TODO | Verify scheduler fires, calls scraper pipeline, and inserts records into DB |
+| Phase 5 — Scheduler | [x] Done | `app/main.py` — APScheduler wired into FastAPI lifespan. `_scheduled_scrape()` + `scheduler` + `lifespan` implemented. |
+| Phase 6 — E2E Test with Scheduler | [x] Done | `test/integration/test_scheduler.py` — 5/5 tests passing. |
 
 **Blockers:**
 - None
 
 **Last updated:** 2026-05-06
+
+---
+
+## Bugs & Fixes
+
+### Bug 1 — LLM rate limit errors in live test suite
+**File:** `test/e2e/test_agent_search_live.py`, `test/integration/test_agent_live.py`, `test/integration/test_tavily_live.py`
+**Symptom:** `litellm.RateLimitError` on the 3rd or 4th test when running the full live suite. Tests fired back-to-back in milliseconds, hitting the provider's RPM cap.
+**Fix:** Added an `autouse` fixture with `asyncio.sleep()` after each test in all three live test files. LLM tests sleep 15s (~4 RPM, safe under all free-tier limits). Tavily tests sleep 3s (more generous quota).
+**Note:** Rate limiting is a test-suite concern only. The app never bursts API calls — the scheduler runs once per 24 hours and users interact at human speed.</p>
+
+### Bug 2 — `ASGITransport` does not fire FastAPI lifespan events
+**File:** `test/integration/test_scheduler.py`
+**Symptom:** `test_scheduler_job_is_registered` and `test_scheduler_job_interval_is_24_hours` failed — `scheduler.get_job("daily_scrape")` returned `None` despite correct implementation.
+**Root cause:** `httpx.AsyncClient(transport=ASGITransport(app=app))` handles HTTP requests but does not send ASGI `lifespan.startup` / `lifespan.shutdown` events. The lifespan context never ran so the scheduler job was never registered.
+**Fix:** Replaced `AsyncClient` with a direct call to `async with lifespan(app)`. Patched `aiosqlite.connect` and `create_tables` to avoid needing a real DB file — the tests only verify the scheduler job is registered with the correct interval.
 
 ---
 
@@ -986,5 +1002,5 @@ All other dependencies (`fastapi`, `aiosqlite`, `pydantic`, `pydantic-settings`,
 - [x] **Phase 2 — Tavily Client** — `scraper/tavily_client.py` + `test/unit/test_tavily_client.py` + config additions
 - [x] **Phase 3 — Wire `_search_jobs`** — update `agent/tools.py` + `test/unit/test_search_tool_executor.py`
 - [x] **Phase 4 — Live Validation** — `test/integration/test_tavily_live.py` + `test/e2e/test_agent_search_live.py` — 4/4 passing
-- [ ] **Phase 5 — Scheduler** — `app/main.py` lifespan additions + scheduler registration test
-- [ ] **Phase 6 — E2E Test with Scheduler** — verify scheduler fires, calls scraper pipeline, inserts records into DB
+- [x] **Phase 5 — Scheduler** — `app/main.py` — `_scheduled_scrape()`, `scheduler`, `lifespan` implemented
+- [x] **Phase 6 — E2E Test with Scheduler** — `test/integration/test_scheduler.py` — 5/5 passing
