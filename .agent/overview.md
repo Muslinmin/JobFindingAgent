@@ -46,7 +46,7 @@ The system is designed in discrete layers. Each layer has a single responsibilit
 | ORM / Queries | aiosqlite + raw SQL | Async DB access via repository pattern |
 | Validation | Pydantic v2 | Schema enforcement on all I/O |
 | Config | pydantic-settings | Environment variable management |
-| Agent Brain | Anthropic API (claude-sonnet, gemini, gpt, etc.) | Natural language reasoning + tool calling |
+| Agent Brain | LiteLLM (Anthropic / OpenAI / Gemini) | Natural language reasoning + tool calling via ReAct loop |
 | Search | Tavily API | Web search built for agent use |
 | Scoring | Pure Python | Keyword-based job relevance scoring |
 | Deduplication | hashlib SHA-256 | Fingerprint-based duplicate prevention |
@@ -90,15 +90,16 @@ The system is designed in discrete layers. Each layer has a single responsibilit
 
 ## Layer 2 — Agent Brain
 
-**Responsibility:** Receive natural language input, reason about what action to take, and execute the correct tool. The agent is the orchestrator — it talks to the backend, the scraper, and the scorer, but owns none of their logic.
+**Responsibility:** Receive natural language input, reason about what action to take, and execute the correct tool. The agent is the orchestrator — it talks to the backend, the scraper, and the scorer, but owns none of their logic. It also owns the user profile, which is shaped through conversation over time.
 
-**Tech:** Anthropic API (`claude-sonnet-4-5`), tool calling / function calling
+**Tech:** LiteLLM (model abstraction over Anthropic / OpenAI / Gemini), FastAPI `POST /chat` endpoint, aiosqlite (shared DB connection), Pydantic, loguru.
 
 **What it owns:**
-- The tool definitions (log job, update status, query jobs, search for jobs)
+- The tool definitions and executors (`log_job`, `update_status`, `query_jobs`, `update_profile`, `search_jobs`)
 - The ReAct loop — reason, act, observe, repeat until done
-- Conversation memory within a session
+- The user profile (`profile.json`) — read at session start, written when the user shares preferences, backed up on every change
 - Routing user intent to the correct tool with the correct arguments
+- `POST /chat` — stateless endpoint that receives the full message history and returns the agent's reply
 
 **The tool loop:**
 
@@ -128,17 +129,21 @@ stop_reason: "end_turn"
 
 | Tool | What it does |
 |---|---|
-| `log_job` | Calls `POST /jobs` to persist a new application |
-| `update_status` | Calls `PATCH /jobs/{id}/status` to move an application forward |
-| `query_jobs` | Calls `GET /jobs` to retrieve and summarise current applications |
-| `search_jobs` | Calls the scraping layer to discover new listings |
+| `log_job` | Calls `repo.insert_job` to persist a new application (idempotent) |
+| `update_status` | Calls `repo.update_job_status` to move an application forward |
+| `query_jobs` | Calls `repo.get_all_jobs` to retrieve and summarise current applications |
+| `update_profile` | Merges updates into `profile.json`; backs up the previous version on change |
+| `search_jobs` | Stubbed — will call the scraping layer (Week 3) to discover new listings |
 
 **Key design decisions:**
 - The LLM proposes actions — the backend validates and executes them. The model never writes directly to the DB
-- Tool definitions are strict JSON schemas — the model cannot pass unexpected argument shapes
-- External APIs are always mocked in tests — the agent logic is tested against deterministic fake responses
+- Tool definitions use OpenAI's function calling format; LiteLLM translates to the correct provider schema at runtime — switching models is one line in `.env`
+- The server is stateless — the client sends the full message history on every `/chat` call; no session storage required
+- The system prompt lives in `agent/prompts/system.md` as a template with a `{profile}` placeholder — prompt iteration requires no code changes
+- `LLMClient` is injected into `agent.run()` so tests can pass a mock without patching global state — no real API calls in tests
+- Profile writes are diff-checked; no diff means no write and no backup
 
-**Detailed doc:** `agent.md` *(coming)*
+**Detailed doc:** `agent.md`
 
 ---
 
@@ -230,7 +235,7 @@ Each layer is built, tested, and stable before the next is started. Later layers
 
 ```
 Week 1   Backend API        Models, DB, repository, CRUD routes, TDD (DONE AND TESTED)
-Week 2   Agent Brain        Tool definitions, ReAct loop, session memory
+Week 2   Agent Brain        Full spec in `.agent/agent.md` — LiteLLM, ReAct loop, profile manager, POST /chat
 Week 3   Scraping Layer     Tavily integration, parsing, rate limiting
 Week 4   Scoring & Dedup    Scoring function, fingerprinting, wired into ingestion
 Week 5   Frontend           Streamlit dashboard, APScheduler digest and scrape jobs
@@ -244,7 +249,7 @@ Week 5   Frontend           Streamlit dashboard, APScheduler digest and scrape j
 |---|---|
 | `overview.md` | This file — full stack and layer summaries |
 | `backend.md` | FastAPI, SQLite, repository, CRUD routes, TDD |
-| `agent.md` | Anthropic API, tool definitions, ReAct loop *(coming)* |
+| `agent.md` | LiteLLM, tool definitions + executors, ReAct loop, profile manager, `POST /chat`, TDD plan |
 | `scraper.md` | Tavily integration, parsing, rate limiting *(coming)* |
 | `scoring.md` | Scoring function, deduplication, fingerprinting *(coming)* |
 | `frontend.md` | Streamlit dashboard, APScheduler *(coming)* |
