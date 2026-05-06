@@ -175,8 +175,8 @@ The `score_job` signature is the stable interface. Any future upgrade (TF-IDF, e
 
 - [x] `test_scorer.py` — all cases listed above pass, 100% branch coverage on `scorer.py`
 - [x] `test_fingerprint.py` — all cases listed above pass, 100% branch coverage on `fingerprint.py`
-- [ ] `fingerprint` and `score` fields populated on every record entering `POST /jobs`
-- [ ] Duplicate insert returns existing record, no error
-- [ ] Keywords sourced from `profile.get("skills", [])` — no hardcoding, no `.env` config
-- [ ] Empty or missing `skills` in profile results in score `0.0`, no error
-- [ ] No direct DB calls anywhere inside `scorer.py` or `fingerprint.py`
+- [x] `fingerprint` and `score` fields populated on every record entering `POST /jobs`
+- [x] Duplicate insert returns existing record, no error
+- [x] Keywords sourced from `profile.get("skills", [])` — no hardcoding, no `.env` config
+- [x] Empty or missing `skills` in profile results in score `0.0`, no error
+- [x] No direct DB calls anywhere inside `scorer.py` or `fingerprint.py`
