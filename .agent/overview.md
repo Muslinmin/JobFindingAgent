@@ -200,28 +200,35 @@ Takes a job record and returns a SHA-256 hash of `(company + role + url)`, norma
 
 ---
 
-## Layer 5 — Frontend & Scheduling
+## Layer 5 — Telegram Interface & Scheduling
 
-**Responsibility:** Give the user a visual interface to see their application pipeline and automate periodic scraping without manual triggers.
+**Responsibility:** Give the user a conversational interface via Telegram to interact with the agent from their phone, and automate periodic scraping and digest notifications without manual triggers.
 
-**Tech:** Streamlit (dashboard), APScheduler (scheduling)
+**Tech:** python-telegram-bot, APScheduler (scheduling)
 
-### Streamlit Dashboard
+No visual dashboard is built — all reporting is handled through the agent via natural language. The user asks questions and the LLM responds with summaries, status updates, and recommendations.
 
-A single-page app that calls the backend API and renders:
-- A status breakdown bar chart (how many at each stage)
-- A filterable table of all applications with company, role, score, date, and status
-- A chat input bar that forwards messages to the agent and displays responses inline
+### Telegram Bot
+
+A thin transport layer that sits in front of the existing `POST /chat` endpoint:
+- Receives incoming messages from the user's phone via the Telegram Bot API
+- Forwards message text (with full conversation history) to `POST /chat`
+- Returns the agent's natural language response back to the user in Telegram
+
+Setup requires a bot token from BotFather and a configured chat ID to restrict access to the owner only. The bot runs in polling or webhook mode depending on deployment environment.
 
 ### APScheduler
 
 Runs two background jobs:
 - **Scrape job** — runs every 24 hours, queries Tavily for configured search terms, feeds results to the backend
-- **Digest job** — runs every Monday morning, queries all applications and emails a summary of stale ones (no movement in 14 days)
+- **Digest job** — runs every Monday morning, queries all applications, identifies stale ones (no movement in 14 days), and sends a summary message directly to the user's Telegram chat
 
 **Key design decisions:**
-- The dashboard is read-only for the DB — all writes go through the agent or the API, not directly through Streamlit
-- The scheduler runs in the same process as the FastAPI app via a lifespan hook, keeping the deployment simple for an entry-level build
+- No Streamlit dashboard — LLM reporting via conversation replaces all visual summaries
+- The Telegram bot is a pure transport layer — it owns no business logic, all reasoning stays in the agent
+- Access is restricted to a single configured chat ID — the bot ignores messages from anyone else
+- The digest notification replaces the previous email approach — same staleness logic, Telegram as the output channel
+- The scheduler runs in the same process as the FastAPI app via a lifespan hook, keeping the deployment simple
 
 **Detailed doc:** `frontend.md` *(coming)*
 
@@ -238,7 +245,7 @@ Week 1   Backend API        Models, DB, repository, CRUD routes, TDD (DONE AND T
 Week 2   Agent Brain        LiteLLM, ReAct loop, profile manager, POST /chat (DONE AND TESTED)
 Week 3   Scraping Layer     Tavily integration, parsing, rate limiting (DONE AND TESTED)
 Week 4   Scoring & Dedup    Scoring function, fingerprinting, wired into ingestion (DONE AND TESTED)
-Week 5   Frontend           Streamlit dashboard, APScheduler digest and scrape jobs
+Week 5   Telegram Interface  Telegram bot, APScheduler digest and scrape jobs
 ```
 
 ---
@@ -249,7 +256,7 @@ Week 5   Frontend           Streamlit dashboard, APScheduler digest and scrape j
 - [x] **Week 2 — Agent Brain** — LiteLLM, ReAct loop, profile manager, tool executors, `POST /chat`
 - [x] **Week 3 — Scraping Layer** — Tavily client, parser, `_search_jobs` wired, APScheduler lifespan hook, live validation
 - [x] **Week 4 — Scoring & Dedup** — Scoring function, fingerprinting, wired into both ingestion paths (`POST /jobs` + `_search_jobs`), parser `description` fix, e2e test verified
-- [ ] **Week 5 — Frontend** — Streamlit dashboard, APScheduler digest and scrape jobs
+- [ ] **Week 5 — Telegram Interface** — Telegram bot (polling/webhook), chat ID access control, APScheduler digest (→ Telegram) and scrape jobs
 
 ---
 
@@ -262,4 +269,4 @@ Week 5   Frontend           Streamlit dashboard, APScheduler digest and scrape j
 | `agent.md` | LiteLLM, tool definitions + executors, ReAct loop, profile manager, `POST /chat`, TDD plan |
 | `scraper.md` | Tavily integration, parsing, rate limiting *(coming)* |
 | `scoring.md` | Scoring function, deduplication, fingerprinting *(coming)* |
-| `frontend.md` | Streamlit dashboard, APScheduler *(coming)* |
+| `frontend.md` | Telegram bot, APScheduler *(coming)* |
