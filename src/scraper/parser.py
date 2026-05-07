@@ -1,9 +1,12 @@
+from loguru import logger
+
 MAX_NOTES_LENGTH = 500
 
 _SEPARATORS = [" — ", " | ", " - ", " at "]
 
 
 def parse_results(raw_results: list[dict]) -> list[dict]:
+    logger.debug("parse_results input: {} raw results", len(raw_results))
     parsed = []
     for result in raw_results:
         url = result.get("url")
@@ -23,6 +26,7 @@ def parse_results(raw_results: list[dict]) -> list[dict]:
             "description": description,
         })
 
+    logger.debug("parse_results output: {} parsed results | {}", len(parsed), parsed)
     return parsed
 
 

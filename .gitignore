@@ -30,6 +30,10 @@ coverage.xml
 venv/
 env/
 
+#Personal data
+*profile.json
+profiles/
+
 # IDEs
 .vscode/
 .idea/
