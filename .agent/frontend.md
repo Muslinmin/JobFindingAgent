@@ -189,3 +189,84 @@ The testing philosophy is identical to previous weeks — units first, integrati
 | Scheduler — job registration | None | Both jobs registered at startup |
 | Scheduler — intervals | None | Correct trigger configuration |
 | Scheduler — teardown | None | Clean shutdown, no hanging threads |
+
+---
+
+## Implementation Checklist
+
+Follow TDD order: write the test, watch it fail, implement the component, watch it pass.
+
+---
+
+### Telegram Bot
+
+#### Tests
+- [x] `test_bot_unknown_chat_id_is_rejected` — unknown chat ID → no `POST /chat` call, no Telegram reply
+- [x] `test_bot_known_chat_id_is_forwarded` — configured chat ID → `POST /chat` called once with correct payload
+- [x] `test_bot_payload_shape` — message text + history sent in expected structure
+- [x] `test_bot_response_delivery` — agent reply delivered to correct chat ID
+- [x] `test_bot_empty_response_fallback` — empty/malformed `POST /chat` body → fallback message sent
+- [x] `test_bot_endpoint_down_fallback` — connection error from `POST /chat` → fallback sent, no crash
+- [x] `test_bot_mocked_round_trip` — full routing integration test with both `POST /chat` and Telegram send mocked
+- [x] `test_bot_live_round_trip` — real `POST /chat` call, Telegram send mocked, gated behind `RUN_LIVE_TESTS=true`
+
+#### Component
+- [x] Create `bot/bot.py` — initialise `python-telegram-bot` Application with token from settings
+- [x] Implement chat ID access control — reject messages from unknown chat IDs silently
+- [x] Implement message handler — forward message text + conversation history to `POST /chat`
+- [x] Implement response delivery — send agent reply back to the originating chat ID
+- [x] Implement fallback handler — catch empty/malformed `POST /chat` responses, send a fallback message
+- [x] Implement error handler — catch connection errors from `POST /chat`, notify user, do not raise
+
+---
+
+### Scrape Job
+
+#### Tests
+- [x] `test_scrape_job_calls_tavily_with_search_terms` — Tavily called once with `settings.search_terms`
+- [x] `test_scrape_job_posts_parsed_results` — two fake Tavily results → two correctly shaped `POST /jobs` calls
+- [x] `test_scrape_job_empty_results_no_post` — empty Tavily list → `POST /jobs` never called
+- [x] `test_scrape_job_tavily_down_exits_cleanly` — Tavily raises → function returns normally, `POST /jobs` never called, failure logged
+
+#### Component
+- [ ] Create `jobs/scrape_job.py` — plain function `scrape_job()` with no scheduler dependency
+- [ ] Call Tavily with `settings.search_terms`
+- [ ] Parse raw Tavily results into `JobCreate`-shaped payloads
+- [ ] POST each parsed result to `POST /jobs`
+- [ ] Handle empty Tavily result list — skip POST calls
+- [ ] Handle Tavily exception — log failure, return normally without raising
+
+---
+
+### Digest Job
+
+#### Tests
+- [x] `test_digest_job_identifies_stale_applications` — three jobs (20d, 5d, 14d old) → message contains 20d and 14d jobs, excludes 5d
+- [x] `test_digest_job_excludes_fresh_applications` — all jobs under 14 days → Telegram send never called
+- [x] `test_digest_job_no_applications_no_message` — empty job list → Telegram send never called
+- [x] `test_digest_job_message_contains_correct_fields` — one stale job → message contains company name and role
+- [x] `test_digest_job_telegram_down_exits_cleanly` — Telegram send raises → function returns normally, failure logged
+
+#### Component
+- [ ] Create `jobs/digest_job.py` — plain function `digest_job()` with no scheduler dependency
+- [ ] Query `GET /jobs` to retrieve all applications
+- [ ] Filter applications with no status change in the last 14 days (inclusive boundary)
+- [ ] Build Telegram message containing company and role for each stale application
+- [ ] Send message to configured Telegram chat ID
+- [ ] Skip send entirely if no stale applications or no applications at all
+- [ ] Handle Telegram send exception — log failure, return normally without raising
+
+---
+
+### Scheduler Wiring
+
+#### Tests
+- [x] `test_scheduler_both_jobs_registered` — both scrape and digest jobs present after lifespan startup
+- [x] `test_scheduler_scrape_job_interval` — scrape job trigger is 24-hour interval
+- [x] `test_scheduler_digest_job_cron` — digest job trigger is Monday cron
+- [x] `test_scheduler_clean_teardown` — lifespan shutdown stops scheduler with no hanging threads
+
+#### Component
+- [ ] Register `scrape_job` on the APScheduler with a 24-hour interval trigger
+- [ ] Register `digest_job` on the APScheduler with a Monday morning cron trigger
+- [ ] Wire scheduler start and stop into the FastAPI lifespan hook

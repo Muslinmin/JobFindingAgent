@@ -15,5 +15,12 @@ class Settings(BaseSettings):
     scrape_query: str = "software engineer Singapore"
     scrape_max_results: int = 10
 
+    # Telegram
+    telegram_bot_token: str = ""
+    telegram_chat_id: int = 0
+
+    # Internal API
+    api_base_url: str = "http://localhost:8000"
+
 
 settings = Settings()

@@ -21,3 +21,4 @@ dependencies:
     - anthropic
     - tavily-python
     - litellm
+    - "python-telegram-bot[job-queue]"
