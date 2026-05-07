@@ -5,6 +5,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from fastapi import FastAPI
 from loguru import logger
+from telegram.ext import Application, MessageHandler, filters
 
 from app.config import settings
 from app.db import repository as repo
@@ -12,6 +13,7 @@ from app.db.database import create_tables, get_db
 from app.models.job import JobCreate
 from app.routes.chat import router as chat_router
 from app.routes.jobs import router as jobs_router
+from bot.bot import handle_message
 from scoring.fingerprint import fingerprint_job
 from scraper.parser import parse_results
 from scraper.tavily_client import search as tavily_search
@@ -62,7 +64,20 @@ async def lifespan(app):
     )
     scheduler.start()
     logger.info("APScheduler started — daily scrape job registered")
+
+    ptb_app = Application.builder().token(settings.telegram_bot_token).build()
+    ptb_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    await ptb_app.initialize()
+    await ptb_app.start()
+    await ptb_app.updater.start_polling()
+    logger.info("Telegram bot started — polling for messages")
+
     yield
+
+    await ptb_app.updater.stop()
+    await ptb_app.stop()
+    await ptb_app.shutdown()
+    logger.info("Telegram bot stopped")
     scheduler.shutdown()
     logger.info("APScheduler stopped")
 

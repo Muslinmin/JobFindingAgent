@@ -81,7 +81,10 @@ TOOL_DEFINITIONS = [
             "description": (
                 "Merge new information into the user profile. "
                 "Call this when the user shares preferences, skills, or personal details. "
-                "Always confirm the change with the user before calling."
+                "Always confirm the change with the user before calling. "
+                "All fields must be nested inside the 'updates' key. "
+                "Example 1: {\"updates\": {\"target_roles\": [\"backend engineer\"], \"base_salary\": 4500}}. "
+                "Example 2: {\"updates\": {\"location\": \"Singapore\", \"skills\": [\"Python\", \"FastAPI\"]}}."
             ),
             "parameters": {
                 "type": "object",

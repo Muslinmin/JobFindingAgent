@@ -148,6 +148,16 @@ The testing philosophy is identical to previous weeks — units first, integrati
 - Start the app via the lifespan hook, then trigger shutdown
 - Assert the scheduler stops with no hanging threads or errors
 
+**5. Bot polling starts on lifespan startup**
+- Mock aiosqlite, create_tables, and the Telegram Application builder
+- Enter the lifespan context
+- Assert `updater.start_polling()` was called once
+
+**6. Bot polling stops on lifespan teardown**
+- Mock as above
+- Enter and exit the lifespan context
+- Assert `updater.stop()` and `application.stop()` and `application.shutdown()` were called
+
 ---
 
 ## Test Execution Order
@@ -161,6 +171,7 @@ The testing philosophy is identical to previous weeks — units first, integrati
 6.  Scrape job — unit tests (1 through 4)
 7.  Digest job — unit tests (1 through 5)
 8.  Scheduler — integration tests (1 through 4)
+9.  Scheduler — bot polling lifecycle tests (5 through 6)
 ```
 
 ---
@@ -189,6 +200,8 @@ The testing philosophy is identical to previous weeks — units first, integrati
 | Scheduler — job registration | None | Both jobs registered at startup |
 | Scheduler — intervals | None | Correct trigger configuration |
 | Scheduler — teardown | None | Clean shutdown, no hanging threads |
+| Scheduler — bot polling start | Telegram Application builder | Bot polling starts on lifespan startup |
+| Scheduler — bot polling stop | Telegram Application builder | Bot polling stops cleanly on teardown |
 
 ---
 
@@ -198,7 +211,7 @@ Follow TDD order: write the test, watch it fail, implement the component, watch 
 
 ---
 
-### Telegram Bot
+### Telegram Bot ✅ DONE
 
 #### Tests
 - [x] `test_bot_unknown_chat_id_is_rejected` — unknown chat ID → no `POST /chat` call, no Telegram reply
@@ -220,7 +233,7 @@ Follow TDD order: write the test, watch it fail, implement the component, watch 
 
 ---
 
-### Scrape Job
+### Scrape Job 🔲 Tests written — component pending
 
 #### Tests
 - [x] `test_scrape_job_calls_tavily_with_search_terms` — Tavily called once with `settings.search_terms`
@@ -238,7 +251,7 @@ Follow TDD order: write the test, watch it fail, implement the component, watch 
 
 ---
 
-### Digest Job
+### Digest Job 🔲 Tests written — component pending
 
 #### Tests
 - [x] `test_digest_job_identifies_stale_applications` — three jobs (20d, 5d, 14d old) → message contains 20d and 14d jobs, excludes 5d
@@ -258,15 +271,21 @@ Follow TDD order: write the test, watch it fail, implement the component, watch 
 
 ---
 
-### Scheduler Wiring
+### Scheduler Wiring 🔲 Tests written — component partially implemented
 
 #### Tests
 - [x] `test_scheduler_both_jobs_registered` — both scrape and digest jobs present after lifespan startup
 - [x] `test_scheduler_scrape_job_interval` — scrape job trigger is 24-hour interval
 - [x] `test_scheduler_digest_job_cron` — digest job trigger is Monday cron
 - [x] `test_scheduler_clean_teardown` — lifespan shutdown stops scheduler with no hanging threads
+- [x] `test_bot_polling_starts_on_startup` — `updater.start_polling()` called during lifespan startup
+- [x] `test_bot_polling_stops_on_teardown` — `updater.stop()`, `application.stop()`, `application.shutdown()` called on exit
 
 #### Component
 - [ ] Register `scrape_job` on the APScheduler with a 24-hour interval trigger
 - [ ] Register `digest_job` on the APScheduler with a Monday morning cron trigger
 - [ ] Wire scheduler start and stop into the FastAPI lifespan hook
+- [x] Build `python-telegram-bot` `Application` in lifespan using token from settings
+- [x] Register `handle_message` on the Application with a text message filter
+- [x] Start bot polling before `yield` (`initialize` → `start` → `updater.start_polling`)
+- [x] Stop bot polling cleanly after `yield` (`updater.stop` → `stop` → `shutdown`)
