@@ -271,6 +271,38 @@ Follow TDD order: write the test, watch it fail, implement the component, watch 
 
 ---
 
+### Bug Fixes & Hardening ✅ DONE
+
+Discovered and resolved during live testing of the Telegram interface.
+
+#### Tests
+- [x] `test_query_jobs_strips_description` — description not present in `_query_jobs` output
+- [x] `test_query_jobs_strips_fingerprint` — fingerprint not present in `_query_jobs` output
+- [x] `test_query_jobs_retains_id` — id retained for LLM to pass to `update_status`
+- [x] `test_query_jobs_retains_company_and_role` — company + role retained for LLM name matching
+- [x] `test_query_jobs_retains_status` — status retained
+- [x] `test_query_jobs_retains_url_score_date_logged_notes` — remaining useful fields retained
+- [x] `test_query_jobs_strips_description_and_fingerprint_across_all_records` — consistent across N records
+- [x] `test_agent_sequences_query_then_update` — agent calls query_jobs → identifies → update_status in correct order
+- [x] `test_compact_list_in_llm_history_excludes_description` — description never enters LLM context
+- [x] `test_compact_list_in_llm_history_excludes_fingerprint` — fingerprint never enters LLM context
+- [x] `test_compact_list_in_llm_history_retains_id` — id present in LLM context for tool call
+- [x] `test_compact_list_retains_company_role_status_for_llm_matching` — LLM has enough to match by name
+- [x] `test_missing_job_id_arg_returns_error_not_crash` — KeyError from missing job_id caught, returned as error JSON
+- [x] `test_invalid_status_value_returns_error_not_crash` — ValueError from bad enum value caught, returned as error JSON
+- [x] `test_wrong_job_id_returns_not_found_gracefully` — wrong ID → "Job not found" JSON, no crash
+- [x] `test_ambiguous_company_name_both_ids_visible_to_llm` — both IDs present when company matches multiple records
+
+#### Component
+- [x] `_query_jobs` strips `description` and `fingerprint` — returns compact index only (`_QUERY_FIELDS`)
+- [x] `_update_status` catches all exceptions, not just `InvalidTransitionError` — returns error JSON, never raises
+- [x] `chat.py` wraps `run()` in `try/except` — returns `{"reply": "", "error": "..."}` on 500 instead of empty crash
+- [x] `bot.py` logs `type(exc).__name__` alongside message — empty error strings no longer possible
+- [x] `bot.py` logs HTTP status code from `/chat` and surfaces `error` field when present
+- [x] `update_profile` tool description includes two examples — prevents LLM from passing fields flat instead of under `updates`
+
+---
+
 ### Scheduler Wiring 🔲 Tests written — component partially implemented
 
 #### Tests

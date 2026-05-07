@@ -148,22 +148,30 @@ async def _log_job(args: dict, db) -> str:
 
 async def _update_status(args: dict, db) -> str:
     try:
-        job = await repo.update_job_status(
-            db,
-            args["job_id"],
-            ApplicationStatus(args["status"]),
-            args.get("notes"),
-        )
+        job_id = args["job_id"]
+        status = ApplicationStatus(args["status"])
+        logger.debug(f"[update_status] job_id={job_id!r} status={status!r}")
+        job = await repo.update_job_status(db, job_id, status, args.get("notes"))
         if not job:
+            logger.debug(f"[update_status] job_id={job_id!r} not found in DB")
             return json.dumps({"error": "Job not found"})
+        logger.debug(f"[update_status] updated job_id={job_id!r} → {status!r}")
         return json.dumps(job)
     except InvalidTransitionError as e:
+        logger.debug(f"[update_status] invalid transition: {e}")
         return json.dumps({"error": str(e)})
+    except Exception as e:
+        logger.error(f"[update_status] unexpected {type(e).__name__}: {e}")
+        return json.dumps({"error": f"{type(e).__name__}: {e}"})
 
+
+_QUERY_FIELDS = {"id", "company", "role", "status", "url", "score", "date_logged", "notes"}
 
 async def _query_jobs(args: dict, db) -> str:
     jobs = await repo.get_all_jobs(db, status_filter=args.get("status"))
-    return json.dumps(jobs)
+    compact = [{k: v for k, v in job.items() if k in _QUERY_FIELDS} for job in jobs]
+    logger.debug(f"[query_jobs] returned {len(compact)} jobs (description+fingerprint stripped)")
+    return json.dumps(compact)
 
 
 def _update_profile(args: dict) -> str:

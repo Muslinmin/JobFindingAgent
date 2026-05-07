@@ -16,17 +16,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     history: list = context.user_data.get("history", [])
     messages = history + [{"role": "user", "content": text}]
 
+    logger.debug(f"Bot: forwarding message to /chat, history_len={len(history)}")
     try:
         async with httpx.AsyncClient(base_url=settings.api_base_url) as client:
             resp = await client.post("/chat", json={"messages": messages})
+            logger.debug(f"Bot: /chat responded status={resp.status_code}")
             data = resp.json()
+            if "error" in data:
+                logger.error(f"Bot: /chat returned error: {data['error']}")
             reply = data.get("reply") or ""
     except Exception as exc:
-        logger.error(f"Bot: POST /chat failed: {exc}")
+        logger.error(f"Bot: POST /chat failed: {type(exc).__name__}: {exc}")
         await context.bot.send_message(chat_id=update.effective_chat.id, text=FALLBACK)
         return
 
     if not reply:
+        logger.warning("Bot: empty reply from /chat, sending fallback")
         await context.bot.send_message(chat_id=update.effective_chat.id, text=FALLBACK)
         return
 
