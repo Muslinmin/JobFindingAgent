@@ -1,591 +1,447 @@
-# Job Application Tracker — Backend Implementation Plan
+# Backend API Layer — Implementation Spec (v2)
+
+> Source of truth for the backend layer of JobFindingAgent v2. Companion to
+> `architecture_v2.md` (Component 3). Captures scope, requirements,
+> specifications, and the work-package breakdown. Build/test order (step 5) is
+> appended once decided. Written for independent execution.
+
+**One-line responsibility:** Source of truth for job records and artifacts.
+Every write from every component goes through this layer.
+
+> **v1 reconciliation (decided):** Full v2 design on a fresh database — no
+> migration. Existing v1 identifiers are kept to avoid churn: `ApplicationStatus`
+> (not `Status`), `role` (not `title`), `InvalidTransitionError`, `transition()`.
+> The state machine lives in `enums.py` (no separate `fsm.py`). Pydantic schemas
+> live in `job.py`. The authoritative implementations are `enums.py` and `job.py`;
+> where snippets below use the older identifiers, the code files win.
 
 ---
 
-## Overview
+## 1. Scope Boundary
 
-The backend is responsible for three things only: persisting job application data, exposing a clean HTTP API for reads and writes, and enforcing business rules at the data layer. It does not know about agents, scrapers, or scoring — those are separate concerns that call into this layer.
+### Inside this layer
+- FastAPI app skeleton + lifespan hook **mechanism** (the registration point — not the scheduled jobs themselves).
+- Data model: the extended `jobs` table and the new `artifacts` table.
+- Repository layer — the **only** place raw SQL and driver details live (the aiosqlite → asyncpg seam).
+- Pydantic schemas + enums: `JobCreate`, `Job`, `ArtifactCreate`, `Artifact`, `Status`, `ArtifactKind`.
+- FSM enforcement — reject illegal transitions before any write.
+- The idempotent upsert flow in `POST /jobs`.
+- Endpoints: `POST /jobs`, `PATCH /jobs/{id}/status`, `GET /jobs`, `POST /jobs/{id}/artifacts`, `POST /jobs/{id}/follow-up`, `POST /chat` (thin).
 
-Stack: FastAPI (transport), SQLite via `aiosqlite` (persistence), Pydantic (validation), `loguru` (logging), `pydantic-settings` (config).
+### Outside this layer (consumers that write/read *through* it)
+- **Scorer** — a pure function; the backend persists the integer it returns and never computes or recomputes it.
+- **Tailoring service**, **scraper adapters**, **agent reasoning**, **Telegram bot** — all write through the API.
+- **Scheduled job functions** (scheduling layer) — only the lifespan hook *mechanism* lives here.
 
----
-
-## Project Structure
-
-```
-JobFindingAgent/
-├── src/
-│   ├── app/
-│   │   ├── main.py              # FastAPI app entry point, loguru config, router mount
-│   │   ├── config.py            # Environment config via pydantic-settings
-│   │   ├── models/
-│   │   │   ├── job.py           # Pydantic request/response schemas
-│   │   │   └── enums.py         # ApplicationStatus enum + valid transitions
-│   │   ├── db/
-│   │   │   ├── database.py      # DB connection + create_tables()
-│   │   │   └── repository.py    # All SQL queries (Repository Pattern)
-│   │   └── routes/
-│   │       └── jobs.py          # CRUD API route handlers
-│   └── test/
-│       ├── conftest.py          # async_client fixture (per-test isolated DB)
-│       ├── test_schemas.py
-│       ├── test_state_machine.py
-│       ├── integration/
-│       │   ├── test_repository.py
-│       │   └── test_routes.py
-│       └── e2e/
-│           └── test_crud_pipeline.py
-├── pytest.ini
-├── environment.yml
-├── .env.example
-└── Dockerfile
-```
+### Resolved boundary decisions
+- **Fingerprint — external.** Belongs to the dedup layer; the method is unsettled (company + title collisions for large employers). The backend imports it behind a stable signature `fingerprint(job: JobCreate) -> str` and treats it as an injected dependency, so revising the algorithm changes **zero** backend code.
+- **`POST /chat` — thin transport.** The route is backend; the body is the agent. There is exactly one interpreter of user intent (the agent). The handler delegates; it does **not** branch between "send to agent" and "send to backend."
+- **FSM — defined in the backend, shared read-only with the agent.** Rule-based. The agent may *read* legality (`can_transition`) to avoid proposing doomed moves, but enforcement is unconditional at the write path. The agent proposes; the backend disposes.
 
 ---
 
-## Phase 1 — Data Models
+## 2. Requirements
 
-### Goal
-Define the shape of a job application record and enforce valid status transitions at the model layer, before any DB operation is attempted.
+### Functional
+1. **Ingest a job idempotently.** Persist a new job; re-ingesting the same job (same fingerprint) does not duplicate — it stamps liveness (`seen_count`, `last_seen_at`) on the existing row. Uniqueness is the backend's responsibility.
+2. **Persist the score it is handed.** Store the integer score; never compute or recompute it.
+3. **Transition status under FSM rule.** Move a record only if the transition is legal; reject illegal ones before any write; stamp `status_changed_at` on every legal transition.
+4. **Record follow-up activity without a state change.** Increment `follow_up_count`, stamp `last_follow_up_at`, leave `status` and `status_changed_at` untouched.
+5. **Register an artifact against a job.**
+6. **Serve the consumers' queries:** status-set filtering (active vs. terminal), age-based selection on `status_changed_at`, and ranked-and-limited selection (top-N `SCORED` by score, then recency, then id).
+7. **Expose one validated write path** to both in-process callers (agent tools, scheduler) and HTTP clients.
+8. **Provide the `/chat` transport endpoint** — thin; delegates to the agent.
 
-### ApplicationStatus State Machine
-
-Status flows in one direction only. Invalid transitions are rejected before any DB write occurs.
-
-```
-FOUND → APPLIED → SCREENING → INTERVIEW → OFFER
-                                         → REJECTED
-        → REJECTED (valid at any active stage)
-```
-
-```python
-# app/models/enums.py
-
-from enum import Enum
-
-class ApplicationStatus(str, Enum):
-    FOUND      = "found"
-    APPLIED    = "applied"
-    SCREENING  = "screening"
-    INTERVIEW  = "interview"
-    OFFER      = "offer"
-    REJECTED   = "rejected"
-
-VALID_TRANSITIONS = {
-    ApplicationStatus.FOUND:      [ApplicationStatus.APPLIED, ApplicationStatus.REJECTED],
-    ApplicationStatus.APPLIED:    [ApplicationStatus.SCREENING, ApplicationStatus.REJECTED],
-    ApplicationStatus.SCREENING:  [ApplicationStatus.INTERVIEW, ApplicationStatus.REJECTED],
-    ApplicationStatus.INTERVIEW:  [ApplicationStatus.OFFER, ApplicationStatus.REJECTED],
-    ApplicationStatus.OFFER:      [],
-    ApplicationStatus.REJECTED:   [],
-}
-
-class InvalidTransitionError(Exception):
-    pass
-
-def transition(current: ApplicationStatus, next: ApplicationStatus) -> ApplicationStatus:
-    if next not in VALID_TRANSITIONS[current]:
-        raise InvalidTransitionError(
-            f"Cannot transition from '{current}' to '{next}'"
-        )
-    return next
-```
-
-### Pydantic Schemas
-
-```python
-# app/models/job.py
-
-from pydantic import BaseModel, HttpUrl
-from datetime import date
-from app.models.enums import ApplicationStatus
-
-class JobCreate(BaseModel):
-    company: str
-    role: str
-    url: HttpUrl
-    source: str = "manual"
-    notes: str | None = None
-
-class JobUpdate(BaseModel):
-    status: ApplicationStatus
-    notes: str | None = None
-
-class JobResponse(BaseModel):
-    id: int
-    company: str
-    role: str
-    url: str
-    status: ApplicationStatus
-    source: str
-    notes: str | None
-    date_logged: date
-    created: bool       # True = new insert, False = already existed (idempotent upsert)
-```
-
-The `created` field on the response tells the caller whether this was a new record or an existing one returned by the idempotency check — without raising an error either way.
+### Non-functional (invariants honored)
+1. Single write path; no consumer writes to the DB directly.
+2. The backend validates and executes; it never reasons. No LLM call originates here. Every operation is deterministic and unit-testable.
+3. Repository isolation — switching aiosqlite → asyncpg touches only `repository.py` / `database.py`.
+4. The two-clocks invariant is enforced **in the write operations themselves** — a follow-up write is structurally incapable of moving `status_changed_at`.
+5. No illegal histories — even an agent proposing `REJECTED → OFFER` cannot produce that row.
+6. The fingerprint is imported behind a stable signature; revising it changes no backend code.
+7. Every external dependency (fingerprint, DB) is injected and mockable.
+8. No authentication/authorization until 1.0.0 (single-user) — explicitly out of scope, not forgotten.
 
 ---
 
-## Phase 2 — Database Layer
+## 3. Specifications
 
-### Goal
-Set up an async SQLite connection, define the schema, and isolate all SQL behind a repository so routes never write raw queries.
+### 3a. Data Model
 
-### Schema
+**Governing principle:** thin typed core + a `metadata` JSON bag. A field gets a
+typed column only if the backend *queries, sorts, or enforces on* it. Everything
+portal-specific (salary, `skills[]`, `categories`, `positionLevels`, UEN,
+district, `objectID`, expiry, `jobSource`) goes into `metadata`. Adding JobStreet
+later adds no columns.
+
+> v1 base columns are reconstructed from references; reconcile against the actual
+> v1 schema. The v2 deltas (five lifecycle columns + `artifacts` table) are the
+> only explicit additions.
+
+#### `jobs` table
+
+**Identity & dedup**
+- `id` — INTEGER, PK.
+- `fingerprint` — TEXT, NOT NULL, **UNIQUE**. The UNIQUE constraint *is* dedup enforcement at the DB level. Value supplied by the external fingerprint function.
+
+**Content (normalized `JobCreate` core)**
+- `company` — TEXT, NOT NULL.
+- `title` — TEXT, NOT NULL.
+- `description` — TEXT, NOT NULL (full JD; may be HTML).
+- `url` — TEXT, NOT NULL (canonical listing URL). Stored, but **not** part of the fingerprint.
+- `posted_at` — TEXT (ISO), nullable. Used as a ranking tie-break.
+- `metadata` — TEXT (JSON). Portal-specific bag + source-native identity for traceability.
+
+**Pipeline state**
+- `status` — TEXT, NOT NULL, default `'DISCOVERED'`. Validated by a Python enum; **no DB `CHECK`** — adding a new state costs zero migration.
+- `score` — INTEGER, **nullable**. NULL while `DISCOVERED`; 0–10000 once scored. Stored once, never recomputed.
+
+**Lifecycle clocks & counters (v2 additions)**
+- `status_changed_at` — TEXT (ISO, UTC), NOT NULL. *The* clock for follow-up/ghost/expiry. Set = `created_at` at insert; re-stamped on every legal transition.
+- `follow_up_count` — INTEGER, NOT NULL, default 0.
+- `last_follow_up_at` — TEXT (ISO, UTC), nullable. Tracked separately so it can never touch `status_changed_at`.
+- `seen_count` — INTEGER, NOT NULL, default 1.
+- `last_seen_at` — TEXT (ISO, UTC), NOT NULL. = `created_at` at insert; re-stamped on every duplicate ingest.
+
+**Bookkeeping**
+- `created_at` — TEXT (ISO, UTC), NOT NULL.
+- `updated_at` — TEXT (ISO, UTC), NOT NULL (generic last-touch).
+
+> **Four timestamps, four meanings:** `updated_at` (any change), `status_changed_at`
+> (status only), `last_seen_at` (ingest sighting), `last_follow_up_at` (follow-up
+> only). Conflating any two is the bug the design warns about. They are separate
+> columns precisely so a follow-up write touches one without the other.
+
+#### `artifacts` table
+- `id` — INTEGER, PK.
+- `job_id` — INTEGER, NOT NULL, FK → `jobs(id)`, `ON DELETE RESTRICT`.
+- `kind` — TEXT, NOT NULL: `cv_pdf` | `cover_letter` | `follow_up_email`. Python-enum validated.
+- `path` — TEXT, NOT NULL (filesystem path; bytes live on disk, not in the row).
+- `created_at` — TEXT (ISO, UTC), NOT NULL.
+
+#### Conventions
+- **Timestamps: TEXT ISO-8601, always UTC.** Lexicographic order = chronological order (age queries become string comparisons); UTC removes timezone ambiguity (SG is UTC+8 — mixing local and UTC would silently skew every ghost/expiry clock by 8 hours).
+- **`status` and `kind` are plain TEXT validated by Python enums, no DB `CHECK`** — new values need no migration.
+- **`score` nullable until scored.**
+- **Artifacts: keep-all (history).** Re-tailoring inserts a new row; "the current CV" is `ORDER BY created_at DESC LIMIT 1` for that `kind`. Matches the project's audit-trail philosophy.
+- **FK `RESTRICT`** is effectively moot: the design never hard-deletes a job (terminal states + filtering, not deletion). SQLite requires `PRAGMA foreign_keys = ON` per connection for the FK to be enforced at all.
+- **Indexes:** the UNIQUE index on `fingerprint` is mandatory (it is the dedup mechanism). Composite indexes `(status, score)` and `(status, status_changed_at)` are deferred until row volume justifies them.
+
+### 3b. State Machine
+
+**States**
+- *Active (pre-application):* `DISCOVERED` → `SCORED` → `TAILORED` → `PENDING_APPROVAL` → `APPLYING`\* → `APPLIED` (\* + `APPLY_FAILED`, both Phase 2)
+- *Active (post-application):* `INTERVIEWING`, `OFFER`
+- *Terminal:* `REJECTED`, `USER_SKIPPED`, `EXPIRED`, `ACCEPTED`, `DECLINED`
+- *Semi-terminal:* `GHOSTED` (one resurrection edge)
+- *Entry state:* `DISCOVERED` — set at insert, never transitioned *into*. The validator handles "new record" as a separate path from "transition."
+
+**Transition table** (`auto` = deterministic system rule, no LLM; `user` = button/chat; `worker` = Phase 2 apply worker; `config` = `auto_apply`)
+
+| From | To | Trigger |
+|---|---|---|
+| DISCOVERED | SCORED | auto: score ≥ threshold |
+| DISCOVERED | REJECTED | auto: score < threshold |
+| SCORED | TAILORED | auto: tailor batch |
+| SCORED | REJECTED | auto: staleness (`stale_after_days`) |
+| TAILORED | PENDING_APPROVAL | auto |
+| TAILORED | APPLYING | config: `auto_apply` (P2) |
+| PENDING_APPROVAL | APPLIED | user: Mark Applied |
+| PENDING_APPROVAL | USER_SKIPPED | user: Skip |
+| PENDING_APPROVAL | EXPIRED | auto: `pending_expiry_days` |
+| PENDING_APPROVAL | APPLYING | user: Apply for me (P2) |
+| APPLYING | APPLIED | worker ok (P2) |
+| APPLYING | APPLY_FAILED | worker fail (P2) |
+| APPLY_FAILED | APPLIED | user: applied by hand (P2) |
+| APPLY_FAILED | USER_SKIPPED | user: gave up (P2) |
+| APPLIED | INTERVIEWING | user |
+| APPLIED | REJECTED | user |
+| APPLIED | GHOSTED | auto: `ghost_after_days` |
+| APPLIED | DECLINED | user: candidate withdraws |
+| INTERVIEWING | INTERVIEWING | user: next round (re-stamps clock) |
+| INTERVIEWING | OFFER | user |
+| INTERVIEWING | REJECTED | user |
+| INTERVIEWING | GHOSTED | auto: `ghost_after_days` |
+| INTERVIEWING | DECLINED | user: candidate withdraws |
+| OFFER | ACCEPTED | user |
+| OFFER | DECLINED | user: candidate declines |
+| OFFER | REJECTED | user: offer rescinded (rare) |
+| GHOSTED | INTERVIEWING | user: resurrection |
+
+Terminal states have no outgoing edges.
+
+**`REJECTED` vs `DECLINED`:** `REJECTED` = the company said no (at any stage);
+`DECLINED` = the candidate said no — either withdrawing from the process
+(`APPLIED` / `INTERVIEWING`) or declining an offer. It is the post-application
+mirror of `USER_SKIPPED` (the candidate's pre-application no). Kept distinct on
+purpose.
+
+**Representation & enforcement**
+- One transition map in the backend is the single source of truth.
+- `validate_transition(from, to)` lives in the **write path** — the unconditional enforcer; every status change (button, chat tool, scheduler, worker) passes through it. Illegal → rejected before any write. This is what makes illegal histories physically impossible.
+- `can_transition(from, to)` is a read-only courtesy for the agent; it never gates anything.
+- **Self-loop `INTERVIEWING → INTERVIEWING` is legal** and re-stamps `status_changed_at` (resets the ghost clock — a new round means the company is active). A naive "reject if from == to" guard would wrongly break this.
+- **`auto_apply` is decided at the call site, not in the FSM.** Both `TAILORED → PENDING_APPROVAL` and `TAILORED → APPLYING` are legal; config picks which fires.
+- **The FSM is structural only** — it does not encode *who* may trigger a move. Actor-authorization is deliberately omitted for now (single-user; each transition has one natural caller in practice).
+
+### 3c. Upsert Contract (`POST /jobs`)
+
+After Pydantic validation (invalid → 422, no write) the backend computes the
+fingerprint via the external function, then takes one of two paths.
+
+**Fresh hit (no row with this fingerprint) → INSERT:**
+- From `JobCreate`: `company`, `title`, `description`, `url`, `posted_at?`, `metadata?`.
+- `fingerprint` ← computed.
+- `status = DISCOVERED`, `score = NULL`.
+- `seen_count = 1`, `follow_up_count = 0`, `last_follow_up_at = NULL`.
+- `created_at = updated_at = status_changed_at = last_seen_at = now (UTC)`.
+
+**Duplicate hit (fingerprint exists) → update liveness only:**
+- `seen_count = seen_count + 1`
+- `last_seen_at = now`
+- `updated_at = now`
+- **Frozen:** `status`, `score`, `status_changed_at`, all content, `follow_up_count`, `created_at`.
+
+> **`status_changed_at` must NOT move on a re-sighting.** If it did, a listing that
+> keeps reappearing in daily scrapes would reset its ghost clock every day and
+> never ghost. `last_seen_at` says "still live"; `status_changed_at` says "how long
+> in this state." Separate columns, separate purposes. Same bug-class as the
+> follow-up/ghost separation.
+
+**Atomic implementation** — one statement, no read-then-write race (also the seam where the future single-writer serialization lands):
 
 ```sql
-CREATE TABLE IF NOT EXISTS jobs (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    fingerprint TEXT    UNIQUE NOT NULL,
-    company     TEXT    NOT NULL,
-    role        TEXT    NOT NULL,
-    url         TEXT    NOT NULL,
-    status      TEXT    NOT NULL DEFAULT 'found',
-    source      TEXT    NOT NULL DEFAULT 'manual',
-    notes       TEXT,
-    date_logged TEXT    NOT NULL
-);
+INSERT INTO jobs (...) VALUES (...)
+ON CONFLICT(fingerprint) DO UPDATE SET
+    seen_count = seen_count + 1,
+    last_seen_at = excluded.last_seen_at,
+    updated_at  = excluded.updated_at;
 ```
 
-The `fingerprint` column is a SHA-256 hash of `(company + role + url)`, normalised to lowercase. It carries a `UNIQUE` constraint — the DB itself prevents duplicates at the storage level.
+**Idempotency claim (state exactly):** idempotent with respect to content and
+status — repeated calls never alter `status`, `score`, content, or
+`status_changed_at`. Intentionally **non-idempotent** on `seen_count` /
+`last_seen_at`, which advance every call by design (the liveness signal).
 
-### DB Connection
+**Boundary reaffirm:** the upsert never scores. It always lands on `DISCOVERED`
+with `score = NULL`. Scoring is the next step, run by the scrape job, which reads
+`DISCOVERED` rows and transitions them via the status endpoint.
 
+### 3d. API Endpoints
+
+**Conventions:** `200` success, `422` invalid body, `404` job not found,
+`409` conflict (illegal transition, or operation invalid for current state).
+A `Job` in any response is the full row; an `Artifact` is the full artifacts row.
+
+**`POST /jobs` — ingest (upsert)**
+- In: `JobCreate { company, title, description, url, posted_at?, metadata? }`. Caller never supplies `status`, `score`, `fingerprint`, timestamps, or counters.
+- Out: `Job`. (No `was_created` flag — the returned row's `seen_count` already encodes it: `1` = created this call, `>1` = duplicate hit.)
+- Does: the 3c upsert. Always `DISCOVERED`. Never scores.
+
+**`PATCH /jobs/{id}/status` — transition (the FSM enforcement point)**
+- In: `{ to_status: Status }`.
+- Out: updated `Job`.
+- Does: load job → `validate_transition(current, to_status)` → if legal, set status, stamp `status_changed_at = now`, `updated_at = now`; illegal → `409`. Self-loop `INTERVIEWING→INTERVIEWING` allowed (re-stamps clock). Every status change converges here.
+
+**`GET /jobs` — query (general read; thin shell for external callers)**
+- In: `status` (set; **default = active pipeline**, terminal only on explicit request), `limit`, `offset`.
+- Out: `list[Job]`.
+- Thin wrapper over the general repository read function. The agent and scheduler call repository functions in-process; this endpoint exists for out-of-process callers (external scripts, debugging, future frontend). Not load-bearing in Phase 1.
+
+**`POST /jobs/{id}/artifacts` — register artifact**
+- In: `ArtifactCreate { kind, path }`.
+- Out: `Artifact`.
+- Does: 404 if no job; else always *insert* a new row (keep-all), `created_at = now`. **Does not change status** (Decision A).
+
+**`POST /jobs/{id}/follow-up` — record follow-up (two-clocks made physical)**
+- In: none (optional `{ note? }`).
+- Out: updated `Job`.
+- Does: increment `follow_up_count`, stamp `last_follow_up_at = now`, `updated_at = now`. **Cannot** touch `status` or `status_changed_at`. Requires `status == APPLIED`, else `409` (Decision B).
+
+**`POST /chat` — agent transport (thin)**
+- In: `{ message, ...context }`.
+- Out: `{ reply, ... }`.
+- Does: hand to the agent, return its reply. Backend owns the route; the agent owns the body. Stateless per call.
+
+**Decision A — artifact registration is decoupled from the status move.**
+`POST .../artifacts` only registers. The tailoring service then calls
+`PATCH .../status` separately (`SCORED → TAILORED → PENDING_APPROVAL`, or
+`→ APPLYING` under `auto_apply`). One endpoint, one responsibility — and it keeps
+on-demand re-tailoring safe: regenerating a CV for an already-`APPLIED` job
+registers a fresh artifact without attempting an illegal transition. Tailoring
+sequence: query top-N `SCORED` → LLM selects (validated JSON) → deterministic
+render to PDF on disk → `POST .../artifacts` → `PATCH .../status` → Telegram push.
+
+**Decision B — `follow-up` requires `status == APPLIED`.** A follow-up only has
+meaning while awaiting a response after applying. The server-side precondition
+guards against a race (job rejected/ghosted between the daily check and the
+action) and keeps the endpoint consistent with "the backend validates."
+
+### Read surfaces (Decision C)
+
+Every DB read is a repository function (the only place SQL lives). Two shapes:
+- **General-purpose:** "list jobs by status, paginated." Backs the agent's `query_jobs` tool (in-process) and the thin HTTP `GET /jobs` (for out-of-process callers).
+- **Specific, rule-bound, named functions:** top-N `SCORED` for tailoring; `PENDING_APPROVAL` older than expiry; `APPLIED`/`INTERVIEWING` older than ghost window; `APPLIED` older than follow-up window with `follow_up_count = 0`. Called in-process by the scheduled jobs; each has a precise typed signature and is unit-tested directly.
+
+Decision: do **not** build one over-configurable query for both. General stays
+general; each pipeline-critical query is its own named function. The LLM never
+calls HTTP — it calls a tool that calls the general function in-process.
+
+---
+
+## 4. Components, Files & Work Packages
+
+> v1 file layout is inferred; reconcile against the repo. "(extend)" = likely
+> exists in v1; "(new)" = introduced in v2.
+
+### File set
+- `enums.py` (extend) — the root of the dependency graph. Holds `ApplicationStatus`, `ArtifactKind`, **and** the state machine (`VALID_TRANSITIONS`, `transition`, `can_transition`, `legal_targets`, `InvalidTransitionError`). Both `job.py` and the service layer import it.
+- `job.py` (extend) — Pydantic I/O models: `JobCreate`, `StatusUpdate`, `JobResponse`, `ArtifactCreate`, `ArtifactResponse` (enums imported from `enums.py`).
+- `database.py` (extend) — connection handling, startup pragmas (`foreign_keys = ON`; WAL noted for 0.7.0), DDL for the extended `jobs` table, the `artifacts` table, and the unique `fingerprint` index.
+- `repository.py` (extend) — all SQL: upsert, status write, artifact insert, follow-up update, general list query, named scheduler queries.
+- `service.py` (new) — shared validated operations both routes and in-process callers invoke.
+- `routes.py` (extend) — FastAPI endpoints (thin over the service) + the thin `/chat` forwarder.
+- `main.py` (extend) — app creation, router includes, lifespan DB-init.
+- `config.py` (minor) — DB path + pragmas. Pipeline thresholds belong to consumer layers.
+
+### Work packages
+
+**WP-A — Data model.** Realizes 3a (`job.py` models; `database.py` DDL). Unit-tested: model validation (required fields; `JobCreate` rejects `status`/`score` via `extra="forbid"`; timestamps serialize ISO-UTC) + a round-trip test that builds the schema in a temp SQLite and confirms both tables and the unique fingerprint index. No dependencies.
+
+**WP-B — FSM.** Realizes 3b (the state-machine portion of `enums.py`). Pure logic, zero I/O — the cleanest unit. Unit-tested: every legal edge passes, every illegal edge rejected, `INTERVIEWING` self-loop allowed, terminal states have no exits. Built alongside the enums.
+
+**WP-C — Repository.** Realizes 3c persistence + the named reads (`repository.py`). Atomic `ON CONFLICT` upsert, status write, artifact insert, follow-up update, general list query, scheduler queries. Unit-tested against a temp SQLite seeded with known rows: upsert inserts-then-bumps `seen_count`; follow-up update leaves `status_changed_at` untouched; each scheduler query returns the right subset/order. Fingerprint injected and mocked. Depends on WP-A.
+
+**WP-D — Service layer.** Realizes 3c/3d orchestration (`service.py`): `ingest_job` (fingerprint via injected fn → repository upsert), `transition_status` (read current → FSM validate → write), `register_artifact`, `record_follow_up`. The single validated path on which HTTP routes, agent tools, and scheduler converge. Unit-tested by mocking the repository + fingerprint and asserting call order + that an illegal transition is refused before any write. Depends on WP-B and WP-C.
+
+**WP-E — API routes.** Realizes the HTTP surface of 3d (`routes.py`): thin wrappers over service operations + the `/chat` forwarder. Integration-tested with httpx over a temp DB: status-code conventions; illegal transition surfaces as 409. Depends on WP-D.
+
+**WP-F — App wiring.** App skeleton in `main.py`: create app, include routers, lifespan DB-init (scheduler registration sits in the hook, but the jobs themselves are the scheduling layer — only the mechanism is here). Startup integration test: boot the app, confirm schema created and routes respond. Depends on WP-E.
+
+### Dependency order
+`enums.py` is the root (both A and B import it). WP-A and WP-B are then the foundation (no further dependencies) → WP-C (needs A) → WP-D (needs B + C) → WP-E (needs D) → WP-F (wires last). Critical path: **enums → A → C → D → E → F**, with **B** parallel to A after enums and joining at D.
+
+**Not work packages here:** the fingerprint (dedup layer; imported behind a stable
+signature, mocked in tests) and the pipeline thresholds in config (consumed by
+other layers, though the columns they act on are defined here).
+
+---
+
+## 5. Build & Test Order
+
+Order respects the §4 dependency graph and the project's TDD discipline:
+Red-Green-Refactor; roughly 70% unit / 25% integration / 5% E2E; all external
+dependencies (fingerprint, LLM) mocked except `live`-marked tests; query
+functions tested as plain functions, never through the scheduler.
+
+**Sequence:** `enums.py` → **WP-B (FSM)** → **WP-A (data model)** → WP-C → WP-D
+→ WP-E → WP-F. B is built before A by preference (purest unit — no I/O, no
+fixtures, no mocking; locks the correctness core D depends on), though A and B
+are interchangeable once `enums.py` exists.
+
+**Step 0 — `enums.py`.** `Status` and `ArtifactKind`. No test of its own.
+
+**WP-B — FSM** (pure, no DB). First red test:
 ```python
-# app/db/database.py
+def test_legal_edge_allowed():
+    assert can_transition(Status.DISCOVERED, Status.SCORED)
 
-import aiosqlite
-from app.config import settings
+def test_illegal_edge_rejected():
+    assert not can_transition(Status.REJECTED, Status.OFFER)
 
-async def get_db():
-    async with aiosqlite.connect(settings.db_path) as db:
-        db.row_factory = aiosqlite.Row
-        yield db
-# @TODO Agent take note : # CRITICAL: Use an isolated in-memory DB (:memory:) for all tests[cite: 44, 46, 62]. 
-# Using ./jobs.db causes "state bleeding"—persistent changes from one test 
-# will contaminate the next, leading to flaky failures[cite: 36, 40, 53]. 
-# Every test must start with a blank slate to ensure reliability and speed[cite: 41, 57, 68]. 
-# Avoid hitting the physical disk to prevent data pollution and ensure consistency 
-# across environments[cite: 54, 55, 60]. If you don't override this in 
-# conftest.py, you're testing on "dirty" data[cite: 36, 52].
+def test_interviewing_self_loop_allowed():
+    assert can_transition(Status.INTERVIEWING, Status.INTERVIEWING)
 
-async def create_tables():
-    
-    async with aiosqlite.connect(settings.db_path) as db:
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS jobs (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                fingerprint TEXT    UNIQUE NOT NULL,
-                company     TEXT    NOT NULL,
-                role        TEXT    NOT NULL,
-                url         TEXT    NOT NULL,
-                status      TEXT    NOT NULL DEFAULT 'found',
-                source      TEXT    NOT NULL DEFAULT 'manual',
-                notes       TEXT,
-                date_logged TEXT    NOT NULL
-            )
-        """)
-        await db.commit()
+def test_terminal_states_have_no_exits():
+    for s in (Status.REJECTED, Status.USER_SKIPPED, Status.EXPIRED,
+              Status.ACCEPTED, Status.DECLINED):
+        assert legal_targets(s) == set()
 ```
+Hand-pick representative legal/illegal edges plus structural properties; do not
+loop the map back against itself.
 
-### Repository Pattern
-
-All SQL lives in `repository.py`. Routes call these functions — they never construct queries themselves. This means the DB driver can be swapped (SQLite → PostgreSQL) by changing one file, without touching any route handler.
-
+**WP-A — Data model.** First red tests (models + schema):
 ```python
-# app/db/repository.py
+def test_jobcreate_refuses_caller_set_status():
+    with pytest.raises(ValidationError):
+        JobCreate(company="X", title="Y", description="Z",
+                  url="http://e", status="DISCOVERED")  # extra='forbid'
 
-import aiosqlite
-from datetime import date
-from app.models.enums import ApplicationStatus, transition
-
-async def insert_job(db, job, fingerprint: str):
-    today = date.today().isoformat()
-    try:
-        cursor = await db.execute(
-            """
-            INSERT INTO jobs (fingerprint, company, role, url, source, notes, date_logged)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (fingerprint, job.company, job.role, str(job.url), job.source, job.notes, today)
-        )
-        await db.commit()
-        return await get_job_by_id(db, cursor.lastrowid), True
-
-    except aiosqlite.IntegrityError:
-        existing = await get_job_by_fingerprint(db, fingerprint)
-        return existing, False
-
-async def get_all_jobs(db, status_filter: str | None = None) -> list[dict]:
-    if status_filter:
-        cursor = await db.execute("SELECT * FROM jobs WHERE status = ?", (status_filter,))
-    else:
-        cursor = await db.execute("SELECT * FROM jobs")
-    rows = await cursor.fetchall()
-    return [dict(row) for row in rows]
-
-async def get_job_by_id(db, job_id: int) -> dict | None:
-    cursor = await db.execute("SELECT * FROM jobs WHERE id = ?", (job_id,))
-    row = await cursor.fetchone()
-    return dict(row) if row else None
-
-async def get_job_by_fingerprint(db, fingerprint: str) -> dict | None:
-    cursor = await db.execute("SELECT * FROM jobs WHERE fingerprint = ?", (fingerprint,))
-    row = await cursor.fetchone()
-    return dict(row) if row else None
-
-
-async def update_job_status(db, job_id: int, new_status: ApplicationStatus, notes: str | None = None) -> dict | None:
-    job = await get_job_by_id(db, job_id)
-    if not job:
-        return None
-    transition(ApplicationStatus(job["status"]), new_status)  # raises InvalidTransitionError if invalid @TODO  check are we going to handle this in function or outside
-    await db.execute(
-        "UPDATE jobs SET status = ?, notes = COALESCE(?, notes) WHERE id = ?",
-        (new_status.value, notes, job_id)
-    )
-    await db.commit()
-    return await get_job_by_id(db, job_id)
-
-async def delete_job(db, job_id: int) -> bool:
-    cursor = await db.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
-    await db.commit()
-    return cursor.rowcount > 0
+async def test_schema_creates_tables_and_unique_fingerprint_index(tmp_db):
+    await init_db(tmp_db)
+    assert await table_exists(tmp_db, "jobs")
+    assert await table_exists(tmp_db, "artifacts")
+    assert await unique_index_on(tmp_db, "jobs", "fingerprint")
 ```
 
----
-
-## Phase 3 — API Routes
-
-### Goal
-Expose validated HTTP endpoints. Route handlers are thin — they validate input (Pydantic does this automatically), call the repository, and return the response. No SQL, no business logic inside the handler.
-
-### Endpoints
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/jobs` | Create a job record (idempotent) |
-| `GET` | `/jobs` | List all jobs, optional `?status=` filter |
-| `GET` | `/jobs/{id}` | Get a single job by ID |
-| `PATCH` | `/jobs/{id}/status` | Update status with transition validation |
-| `DELETE` | `/jobs/{id}` | Remove a job record |
-
+**WP-C — Repository** (real temp SQLite — do not mock the DB; fingerprint
+injected). The frozen-clock assertions are the load-bearing ones:
 ```python
-# app/routes/jobs.py
+async def test_upsert_fresh_inserts_discovered(repo, empty_db):
+    row = await repo.upsert_job(make_jobcreate(), fingerprint="abc", now=t1)
+    assert row.status == Status.DISCOVERED
+    assert row.seen_count == 1 and row.score is None
 
-import hashlib
-from fastapi import APIRouter, Depends, HTTPException, Query
-from app.models.job import JobCreate, JobUpdate, JobResponse
-from app.db.database import get_db
-from app.db import repository as repo
-from app.models.enums import InvalidTransitionError
+async def test_upsert_duplicate_bumps_seen_and_freezes_clock(repo, db_with_job):
+    row = await repo.upsert_job(make_jobcreate(), fingerprint="abc", now=t2)
+    assert row.seen_count == 2
+    assert row.status_changed_at == t1        # must NOT move on re-sighting
 
-router = APIRouter(prefix="/jobs", tags=["jobs"])
-
-def make_fingerprint(job: JobCreate) -> str:
-    raw = f"{job.company.lower().strip()}|{job.role.lower().strip()}|{str(job.url)}"
-    return hashlib.sha256(raw.encode()).hexdigest()
-
-
-
-
-@router.post("", status_code=201, response_model=JobResponse)
-async def create_job(payload: JobCreate, db=Depends(get_db)):
-    fp = make_fingerprint(payload)
-    job, created = await repo.insert_job(db, payload, fp)
-    return {**job, "created": created}
-
-@router.get("", response_model=list[JobResponse])
-async def list_jobs(status: str | None = Query(None), db=Depends(get_db)):
-    jobs = await repo.get_all_jobs(db, status_filter=status)
-    return [{**j, "created": False} for j in jobs]
-
-@router.get("/{job_id}", response_model=JobResponse)
-async def get_job(job_id: int, db=Depends(get_db)):
-    job = await repo.get_job_by_id(db, job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-    return {**job, "created": False}
-
-@router.patch("/{job_id}/status", response_model=JobResponse)
-async def update_status(job_id: int, payload: JobUpdate, db=Depends(get_db)):
-    try:
-        job = await repo.update_job_status(db, job_id, payload.status, payload.notes)
-    except InvalidTransitionError as e:
-        raise HTTPException(status_code=422, detail=str(e))
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-    return {**job, "created": False}
-
-@router.delete("/{job_id}", status_code=204)
-async def delete_job(job_id: int, db=Depends(get_db)):
-    deleted = await repo.delete_job(db, job_id)
-    if not deleted:
-        raise HTTPException(status_code=404, detail="Job not found")
+async def test_follow_up_leaves_status_clock_untouched(repo, applied_job):
+    row = await repo.record_follow_up(applied_job.id, now=t2)
+    assert row.follow_up_count == 1 and row.last_follow_up_at == t2
+    assert row.status_changed_at == applied_job.status_changed_at
 ```
+Plus one test per named scheduler query (tailoring select ordering; ghost/expiry
+threshold boundary).
 
----
-
-## Phase 4 — Config, Logging & Error Handling
-
-### Environment Config
-
+**WP-D — Service** (mock repository + fingerprint). Load-bearing test: no write
+on an illegal transition:
 ```python
-# app/config.py
+async def test_transition_refuses_illegal_before_any_write(service, mock_repository):
+    with pytest.raises(IllegalTransition):
+        await service.transition_status(applied_job_id, Status.OFFER)
+    mock_repository.write_status.assert_not_called()
 
-from pydantic_settings import BaseSettings
-
-class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env")
-
-    db_path: str = "./jobs.db"
-    log_level: str = "INFO"
-
-settings = Settings()
+async def test_ingest_computes_fingerprint_then_upserts(service, mock_repository, mock_fingerprint):
+    await service.ingest_job(make_jobcreate())
+    mock_fingerprint.assert_called_once()
+    mock_repository.upsert_job.assert_called_once()
 ```
 
-Secrets for later phases (API keys) are added here as fields. They are never hardcoded anywhere in the codebase.
-
-### Structured Logging
-
+**WP-E — Routes** (integration, httpx, temp DB):
 ```python
-# app/main.py
+async def test_patch_illegal_status_returns_409(client, applied_job):
+    r = await client.patch(f"/jobs/{applied_job.id}/status",
+                           json={"to_status": "OFFER"})
+    assert r.status_code == 409
 
-from loguru import logger
-from app.config import settings
-
-logger.add(
-    "logs/app.log",
-    rotation="10 MB",
-    retention="7 days",
-    level=settings.log_level,
-    format="{time} | {level} | {module} | {message}"
-)
+async def test_follow_up_on_non_applied_returns_409(client, scored_job):
+    r = await client.post(f"/jobs/{scored_job.id}/follow-up")
+    assert r.status_code == 409
 ```
 
-### Error Handling Strategy
+**WP-F — App wiring** (startup integration). Boot the app through the lifespan
+hook, confirm the schema exists and `GET /jobs` answers `200`.
 
-| Failure Mode | HTTP Response | Behaviour |
-|---|---|---|
-| Duplicate job insert | `201 Created` | Returns existing row, `created: false` |
-| Invalid status transition | `422 Unprocessable Entity` | Message states current → attempted transition |
-| Job ID not found | `404 Not Found` | Standard not found |
-| DB connection failure | `503 Service Unavailable` | Log + let caller retry |
+**E2E (minimal, ~5%):** one thin slice — `POST /jobs`, then `PATCH` through a
+legal sequence, then `GET` it back. Fuller cross-layer E2E belongs at the
+overview level, not here.
 
 ---
 
-## Key Dependencies
+## 6. Invariants
 
-```
-fastapi
-uvicorn[standard]
-aiosqlite
-pydantic
-pydantic-settings
-loguru
-httpx
-python-dotenv
-```
+1. The scraper never reasons; the agent never writes to the DB directly. All writes go through the backend's single validated path.
+2. The LLM proposes; the backend validates and executes (FSM, Pydantic, repository). No LLM call originates in this layer.
+3. Every external dependency (fingerprint, DB) is injected and mocked in tests.
+4. The two-clocks rule is physical: follow-up writes cannot move `status_changed_at`; re-sightings cannot move it either.
+5. Repository pattern isolation — a DB-driver switch touches only `repository.py` / `database.py`.
+6. Timestamps are ISO-8601 UTC everywhere.
 
 ---
 
----
+## 7. Deferred / Open
 
-# TDD Overview for the Backend
-
----
-
-## Philosophy
-
-A test is a specification, not a verification. You write what correct behaviour looks like before writing the code that produces it. The implementation is an answer to the test.
-
-```
-Red      → Write a failing test describing the behaviour you want
-Green    → Write the minimum code to make it pass
-Refactor → Clean up the implementation — the test catches any regression
-```
-
----
-
-## Test Categories
-
-### Unit Tests (~70%)
-
-Test one function in complete isolation. No DB, no HTTP, no network. Millisecond feedback.
-
-**What gets unit tested:** `transition()`, `make_fingerprint()`, Pydantic schema validation edge cases.
-
-```python
-# tests/unit/test_state_machine.py
-
-import pytest
-from app.models.enums import ApplicationStatus, transition, InvalidTransitionError
-
-def test_applied_can_move_to_screening():
-    assert transition(ApplicationStatus.APPLIED, ApplicationStatus.SCREENING) == ApplicationStatus.SCREENING
-
-def test_cannot_skip_from_found_to_offer():
-    with pytest.raises(InvalidTransitionError):
-        transition(ApplicationStatus.FOUND, ApplicationStatus.OFFER)
-
-def test_rejected_is_terminal():
-    with pytest.raises(InvalidTransitionError):
-        transition(ApplicationStatus.REJECTED, ApplicationStatus.INTERVIEW)
-
-def test_offer_is_terminal():
-    with pytest.raises(InvalidTransitionError):
-        transition(ApplicationStatus.OFFER, ApplicationStatus.SCREENING)
-
-def test_can_reject_from_any_active_stage():
-    active = [ApplicationStatus.APPLIED, ApplicationStatus.SCREENING, ApplicationStatus.INTERVIEW]
-    for status in active:
-        assert transition(status, ApplicationStatus.REJECTED) == ApplicationStatus.REJECTED
-```
-
----
-
-### Integration Tests (~25%)
-
-Test routes + real in-memory SQLite DB. One fresh DB per test — no shared state between tests.
-
-```python
-# tests/integration/test_routes.py
-
-import pytest
-from httpx import AsyncClient
-from app.main import app
-
-@pytest.mark.asyncio
-async def test_create_job_returns_201(async_client):
-    response = await async_client.post("/jobs", json={
-        "company": "GovTech",
-        "role": "Data Engineer",
-        "url": "https://careers.gov.sg/123"
-    })
-    assert response.status_code == 201
-    assert response.json()["company"] == "GovTech"
-    assert response.json()["created"] == True
-
-@pytest.mark.asyncio
-async def test_duplicate_post_returns_200_not_201(async_client):
-    payload = {"company": "GovTech", "role": "Data Engineer", "url": "https://careers.gov.sg/123"}
-    await async_client.post("/jobs", json=payload)
-    response = await async_client.post("/jobs", json=payload)
-    assert response.status_code == 200
-    assert response.json()["created"] == False
-
-@pytest.mark.asyncio
-async def test_invalid_transition_returns_422(async_client):
-    create = await async_client.post("/jobs", json={
-        "company": "DBS", "role": "Analyst", "url": "https://dbs.com/1"
-    })
-    job_id = create.json()["id"]
-    response = await async_client.patch(f"/jobs/{job_id}/status", json={"status": "offer"})
-    assert response.status_code == 422
-
-@pytest.mark.asyncio
-async def test_status_filter_returns_correct_subset(async_client):
-    await async_client.post("/jobs", json={"company": "A", "role": "R1", "url": "https://a.com/1"})
-    await async_client.post("/jobs", json={"company": "B", "role": "R2", "url": "https://b.com/2"})
-    response = await async_client.get("/jobs?status=found")
-    assert len(response.json()) == 2
-
-@pytest.mark.asyncio
-async def test_get_nonexistent_job_returns_404(async_client):
-    response = await async_client.get("/jobs/9999")
-    assert response.status_code == 404
-
-@pytest.mark.asyncio
-async def test_delete_job_removes_record(async_client):
-    create = await async_client.post("/jobs", json={
-        "company": "ST Eng", "role": "SWE", "url": "https://stengg.com/1"
-    })
-    job_id = create.json()["id"]
-    await async_client.delete(f"/jobs/{job_id}")
-    response = await async_client.get(f"/jobs/{job_id}")
-    assert response.status_code == 404
-```
-
----
-
-### End-to-End Tests (~5%)
-
-Test the full CRUD lifecycle as a user would experience it — create, read, update, delete in sequence.
-
-```python
-# tests/e2e/test_crud_pipeline.py
-
-@pytest.mark.asyncio
-async def test_full_crud_lifecycle(async_client):
-    # Create
-    create = await async_client.post("/jobs", json={
-        "company": "GovTech", "role": "Data Engineer", "url": "https://careers.gov.sg/1"
-    })
-    assert create.status_code == 201
-    job_id = create.json()["id"]
-
-    # Read
-    get = await async_client.get(f"/jobs/{job_id}")
-    assert get.json()["status"] == "found"
-
-    # Update — valid transition
-    patch = await async_client.patch(f"/jobs/{job_id}/status", json={"status": "applied"})
-    assert patch.status_code == 200
-    assert patch.json()["status"] == "applied"
-
-    # Delete
-    delete = await async_client.delete(f"/jobs/{job_id}")
-    assert delete.status_code == 204
-
-    # Confirm gone
-    gone = await async_client.get(f"/jobs/{job_id}")
-    assert gone.status_code == 404
-```
-
----
-
-## Shared Fixtures (`conftest.py`)
-
-```python
-# conftest.py
-
-import pytest
-from httpx import AsyncClient
-from app.main import app
-from app.db.database import create_tables
-
-@pytest.fixture
-async def async_client():
-    """
-    Fresh FastAPI app with a fresh in-memory SQLite DB for every test.
-    Tests are fully isolated — no shared state.
-    """
-    await create_tables()
-    async with AsyncClient(app=app, base_url="http://test") as client:
-        yield client
-```
-
----
-
-## Running the Tests
-
-```bash
-# All tests
-pytest
-
-# Unit only (fastest feedback loop during development)
-pytest tests/unit/
-
-# With coverage report
-pytest --cov=app --cov-report=term-missing
-
-# Specific test
-pytest tests/unit/test_state_machine.py::test_rejected_is_terminal -v
-```
-
-**Coverage targets:**
-- `app/models/enums.py` — 100% (pure logic, no excuses)
-- `app/db/repository.py` — 90%+
-- `app/routes/jobs.py` — 90%+
-- Overall `app/` — 80% minimum
+- **SQLite single-writer constraint** — named, not solved. One writer at a time across the whole file; concurrent writes (scrape burst vs. a user-triggered tool call) yield `SQLITE_BUSY`. Invisible at dev scale. Mitigations (0.7.0 reliability): WAL mode, `busy_timeout`, short write transactions, optionally a single writer connection/queue. The single validated write path pre-positions this fix to one place.
+- **v1 file layout reconciliation** — confirm actual filenames/structure against §4.
