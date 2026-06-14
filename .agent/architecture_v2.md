@@ -155,6 +155,17 @@ that needs "who is the candidate" reads from here — never from a PDF.
 - The CV is parsed **once** into `profile.json` (experiences, projects, skills,
   education, contact). The CV file itself is just a rendering of this data;
   tailored CVs are re-renderings of subsets of it.
+- **The profile is a deliberate superset of everything true** — every project
+  (large or small), every skill, including the ATS-variant surface forms of the
+  *same* real competence (`PostgreSQL`/`Postgres`, `REST`/`RESTful`, `CI/CD`).
+  This is what makes tailoring a *selection* problem rather than a *gap-closing*
+  one (see § Tailoring Service): there is nothing legitimate to add at tailoring
+  time, only true content to choose from.
+- **Each experience/project carries `demonstrated_skills`** — the skills that
+  *specific item* genuinely exercised, authored by the human (or parse-proposed,
+  then reviewed). These authored associations are what let the tailoring LLM
+  emphasise a real skill on the right item without fabricating one (see § Agent
+  Brain → LaTeX output path).
 - Chat-driven updates continue via the agent's `update_profile` tool
   (diff-checked, backup-on-change — unchanged from v1).
 - `search_queries.json` is derived from the profile by the LLM (see slow loop).
@@ -282,9 +293,24 @@ Repository pattern unchanged — SQLite now, PostgreSQL later touches one file.
   static config.
 - v2.1: embedding cosine similarity (JD text vs full profile text) — this is
   what makes **adjacent roles** rank correctly despite low keyword overlap.
-- **Signature: `score(jd_text, profile) -> int` (0–10000).** Embeddings add a
+- **Signature: `score(jd_text, candidate) -> int` (0–10000).** Embeddings add a
   model dependency: inject the embedder so tests pass a mock (same seam
-  pattern as `LLMClient` injection in the agent).
+  pattern as `LLMClient` injection in the agent). The scorer is reused at two
+  points: discovery (`score(jd, full_profile)`) and the tailoring loop
+  (`score(jd, tailored)`), via a `tailored → scorable_text` serializer.
+- **Discovery is a coarse filter by design.** `score_threshold` is deliberately
+  **lenient and configurable** — "plausibly relevant, let it through" — because
+  the precise relevance judgement is deferred to the tailored re-score
+  (see § Tailoring Service). The daily budget (`tailor_batch_size`), not the
+  threshold, is the real throttle.
+- **Two deferred scoring caveats** (flagged in `tailoring.md`, not solved at
+  0.6.x): (1) *ranking dilution* — once embeddings land (v2.1), mean-pooling the
+  bloated superset into one vector depresses good-fit jobs in the top-N ranking
+  even past a lenient gate; fix by ranking on profile *chunks* (top-k / max-pool)
+  at 0.7.x. (2) *maintain-or-beat reachability* — under v2.0 keyword overlap a
+  tailored subset cannot out-overlap its own superset on raw count, so the loop's
+  `target_score` needs a coverage *ratio* or a tolerance under v2.0; it is
+  meaningful as-is under v2.1 embeddings.
 
 Integer score contract:
 
@@ -362,13 +388,23 @@ Notes:
 **Responsibility:** JD + profile → tailored CV PDF. Triggered for every job
 entering `TAILORED`.
 
+**Tailoring is selection, not gap-closing** (see `tailoring.md` for the full
+decision record). `profile.json` is a deliberate **superset of everything true**;
+tailoring chooses a subset and reframes its phrasing. The only ethical source of
+any keyword is the candidate's own history, so a "missing keyword" can only mean
+*true content not yet selected* — never content to invent. This makes invariant 4
+structurally enforced rather than merely prompt-enforced.
+
 Two strictly separated steps:
-1. **LLM (LiteLLM, structured output):** selects and reorders content from
-   `profile.json` — which bullets, which projects, skill ordering, tailored
-   summary — guided by the incorporated skills (`resume-tailor`,
-   `resume-ats-optimizer`, `resume-section-builder`; see § Agent Brain). Output
-   is JSON validated against a Pydantic schema. The prompt constrains the LLM to
-   *select and emphasise only* — it may not invent experience.
+1. **LLM (LiteLLM, structured output):** emits a `TailoredSelection` — a
+   *projection* over the superset, not a copy of it (no identity fields). It
+   selects which experiences/projects/skills and their order, and may reframe
+   the text of selected items, guided by the incorporated skills (`resume-tailor`,
+   `resume-ats-optimizer`, `resume-section-builder`; see § Agent Brain). Output is
+   JSON validated against a Pydantic schema. Content lives in **three tiers** with
+   decreasing rigidity (see § Agent Brain → LaTeX output path): identity (frozen),
+   selection (by reference — emitted `ref_id`s must resolve to real entries), and
+   text (constrained rewrite — full freedom over *phrasing*, none over *claims*).
 2. **Renderer (deterministic):** Jinja2 `.tex` template + `tectonic`
    (alt: `latexmk`) → PDF. The template owns all LaTeX syntax; content strings
    are LaTeX-escaped before substitution. The LLM can never break layout because
@@ -377,36 +413,48 @@ Two strictly separated steps:
 
 #### Score-driven tailoring loop
 
-Tailoring is iterative, bounded by `max_passes` (default **1**). The loop
+Tailoring is iterative, bounded by `max_passes` (default **2**). The loop
 **reuses the existing scorer** — no new scoring concept. The scorer's contract
-is `score(jd_text, profile) -> int (0–10000)`; the loop calls it with the
+is `score(jd_text, candidate) -> int (0–10000)`; the loop calls it with the
 **tailored content** in place of the master profile, so it measures the tailored
 *projection* against the JD in the same basis-point unit as discovery scoring.
+The only adapter needed is a `tailored → scorable_text` serializer (resolve the
+selection's `ref_id`s, assemble the text).
 
 ```
 best = None
-for pass in range(max_passes):           # default max_passes = 1
+for pass in range(max_passes):              # max_passes = 2
     tailored = llm_tailor(jd, profile, gap_hint)   # gap_hint empty on pass 0
     s = score(jd_text, tailored)                   # reuse scorer, same 0–10000 unit
-    if best is None or s > best.score:
+    if best is None or s > best.score + EPS:       # no-improvement guard
         best = (tailored, s)
-    if s >= target_score:                 # good enough, stop early
+    else:
+        break                                      # converged — stop early
+    if s >= target_score:                          # good enough — stop early
         break
-    gap_hint = missing_keywords(jd, tailored)       # feed the gap into next pass
+    gap_hint = missing_keywords(jd, tailored)       # in-profile, unselected keywords
 render(best.tailored)                      # render the BEST pass, not the last
 ```
 
-- **Default is one pass:** tailor once, score once, render. Re-iteration only
-  happens if `max_passes > 1` *and* the first pass is below `target_score`.
+- **`max_passes = 2`, a circuit breaker not a mechanism.** Selecting from a
+  *fixed* superset against a *fixed* JD has a hard achievable ceiling reached in
+  1–2 passes; more passes burn tokens for nothing. The real economiser is the
+  **no-improvement guard** (`EPS`): stop the moment a pass fails to beat the best.
+- **`target_score` = the job's initial discovery score** ("maintain or beat").
+  It doubles as the single tailored-quality bar — there is no separate
+  `tailored_configuration_score`.
 - **Keep the best pass, not the last.** A later pass can score lower; the loop
   retains the highest-scoring result.
-- **The gap is fed forward.** Between passes, the ATS keyword model
-  (`resume-ats-optimizer`) computes which JD keywords the tailored output still
-  misses, and that gap is injected into the next tailoring prompt — closing the
-  loop between scoring and selection.
-- **Cost-bounded by construction.** `max_passes` caps LLM calls per job; with
-  the default of 1 this adds nothing over single-pass tailoring. Each pass is
-  one LLM call + one (cheap, deterministic) score call.
+- **The gap is fed forward, but it is *in-profile, unselected* keywords** — true
+  content the projection left on the table, never content to invent. The ATS
+  keyword model (`resume-ats-optimizer`) computes it from the tailored output.
+- **Below-bar behaviour: deliver anyway, show the score.** If the best of 2
+  passes still misses `target_score`, the CV is still pushed to approval with the
+  score visible in the Telegram card — the tokens are spent and the human decides
+  at the gate. Reachability caveat: "maintain or beat" is meaningful under
+  embeddings (v2.1); under v2.0 keyword overlap a subset cannot out-overlap its
+  own superset on raw count, so v2.0 needs a coverage *ratio* or a tolerance (see
+  § Scoring, deferred).
 
 This means ATS optimization is **not a separate gate** — it's the scorer applied
 to tailored output, with its keyword model also supplying the gap hint. Scoring
@@ -415,6 +463,9 @@ appears in one place (the scorer); the loop just calls it on different inputs.
 Artifacts are written to disk, registered via `POST /jobs/{id}/artifacts`.
 
 Testing: mock the LLM, assert schema validity; snapshot-test the renderer.
+Additional guards (see `tailoring.md` § invariants): every `ref_id` resolves to a
+real profile entry; skill terms surfaced in tailored text ⊆ that item's
+`demonstrated_skills`; no new numerals/named entities vs the source item.
 
 ### 6. Telegram Bot — transport + approval gate
 
@@ -469,7 +520,7 @@ and renders).
 | Skill | Feeds | What it contributes |
 |---|---|---|
 | `resume-tailor` | `tailor_resume` / tailoring pass (LLM step) | JD-vs-profile selection logic: reorder experience by relevance, rewrite the summary to mirror the role, lead with the most relevant bullets, integrate JD keywords truthfully. The core of the "select & emphasise only" step. |
-| `resume-ats-optimizer` | scorer (keyword model) + gap hint in the tailoring loop | Keyword taxonomy (hard / soft / industry), match-score logic, placement priority (summary → skills → bullets), ATS formatting rules. Not a separate gate: it sharpens the scorer, and its keyword model computes the missing-keyword gap fed into the next tailoring pass (see § Tailoring Service). |
+| `resume-ats-optimizer` | scorer (keyword model) + gap hint + text-tier guard | Keyword taxonomy (hard / soft / industry), match-score logic, placement priority (summary → skills → bullets), ATS formatting rules. Not a separate gate: it sharpens the scorer, and its keyword model computes the gap — *in-profile keywords not yet selected* — fed into the next tailoring pass. Its keyword detector also powers the text-tier guard (surfaced skills ⊆ item's `demonstrated_skills`). See § Tailoring Service. |
 | `resume-section-builder` | tailoring pass (structure) | Section composition & ordering by career stage. For this user: **entry-level / technical / recent-graduate** profile — prioritise Skills + Projects, Education carries weight, 3–5 achievement bullets. Shapes the JSON structure the LLM emits. |
 | `cover-letter-generator` | `draft_cover_letter` | JD + profile → 250–400-word letter: hook, direct-match body, gap handling, call to action. Produces a distinct `cover_letter` artifact. |
 
@@ -494,19 +545,34 @@ rendering deterministic and uncrashable:
   LaTeX.** A Jinja2 `.tex` template owns every bit of LaTeX syntax; the LLM only
   fills slots. This is the LaTeX equivalent of invariant 2: the LLM cannot break
   layout because it never produces layout.
-- **Two classes of template slot — and only one is LLM-touched.**
-  - **Fixed (identity) slots** — name, email, phone, location, school, degree,
+- **Three tiers of template slot, decreasing rigidity — only two are LLM-touched.**
+  - **Identity (frozen)** — name, email, phone, location, school, degree,
     graduation date, links. Substituted **directly from `profile.json`**; the LLM
-    never sees or rewrites them. They are constant across every tailored CV; only
-    the profile (source of truth) can change them.
-  - **Variable (tailored) slots** — professional summary, which experience
-    bullets and in what order, which projects, skill ordering. These are the
-    *only* fields the LLM selection step populates, and only by selecting/
-    reordering/rephrasing real profile content (invariant 4).
+    never sees or rewrites them. Constant across every tailored CV; only the
+    profile (source of truth) can change them.
+  - **Selection (by reference)** — which experiences/projects/skills, and their
+    order. The LLM emits `ref_id`s plus ordering; code resolves them to the real
+    strings. Guard: every `ref_id` must resolve to a real profile entry. The LLM
+    chooses and orders; it cannot conjure an item.
+  - **Text (constrained rewrite)** — professional summary and the phrasing of
+    selected bullets. The LLM has full freedom over *how it says things*
+    (grammar, tense, synonyms, connectives, mirroring the JD's wording) and zero
+    freedom over *what it claims*. Two guards: (a) skill terms surfaced in the
+    text must be a subset of that item's `demonstrated_skills`; (b) no new
+    specifics — numerals, named entities — absent from the source item.
 
-  The Pydantic schema encodes this split: identity fields are passed through
-  unmodified; tailored fields are the LLM's output surface. A tailored CV is
-  therefore `fixed(profile) + variable(LLM selection)` rendered through one
+  `demonstrated_skills` is the linchpin: each experience/project is tagged (by
+  the human, or parse-proposed then reviewed) with the skills it genuinely
+  exercised. This blocks the "two true atoms → one false molecule" failure — "I
+  have leadership" + "I did project X" must not become "I led a team on X" unless
+  X is actually tagged with leadership. The association is authored, never
+  invented. (Soft edge: the skill-subset check catches fabricated *attributions*,
+  not every fabricated *specific*; "team of 5" is caught only by guard (b), which
+  is prompt-enforced plus a source diff, not a formal proof.)
+
+  The Pydantic schema encodes the split: identity passes through unmodified;
+  selection + text are the LLM's output surface (`TailoredSelection`). A tailored
+  CV is therefore `identity(profile) + resolved(selection)` rendered through one
   template.
 - **Escaping is mandatory.** Content strings are passed through a LaTeX-escape
   pass (`& % $ # _ { } ~ ^ \`) before template substitution. An unescaped `&`
@@ -535,8 +601,9 @@ rendering deterministic and uncrashable:
   written artifact (`kind='cover_letter'`, `.txt`/`.md` body) delivered as text
   via Telegram — no second LaTeX template. Still a real artifact record for the
   audit trail; just not rendered.
-- **Tailoring is score-bounded** (`max_passes`, default 1) and **reuses the
-  scorer** rather than introducing an ATS gate — see § Tailoring Service.
+- **Tailoring is score-bounded** (`max_passes`, default 2, plus a no-improvement
+  guard) and **reuses the scorer** rather than introducing an ATS gate — see
+  § Tailoring Service.
 
 Testing: mock the LLM and assert the JSON validates against the Pydantic
 schema; snapshot-test the `.tex` template output; a single `live`-marked test
@@ -624,7 +691,9 @@ applications/day); `tailor_batch_size` is sized to the human, and LLM cost
 follows automatically.
 
 Settings: `tailor_batch_size=10`, `score_threshold=7000` (basis points,
-= 0.70), `follow_up_after_days=7`, `pending_expiry_days=14`,
+= 0.70, lenient by design), `max_passes=2`, `target_score` (defaults to the
+job's initial discovery score), `EPS` (no-improvement floor, tuned empirically),
+`follow_up_after_days=7`, `pending_expiry_days=14`,
 `stale_after_days=14`, `ghost_after_days=35`, per-adapter `delay_s`,
 LiteLLM `rpm`/`tpm`.
 
@@ -649,8 +718,8 @@ LiteLLM `rpm`/`tpm`.
 
 4. [tailoring pass — budgeted]
    for job in top tailor_batch_size of status=SCORED (by score desc):
-       selection = llm_tailor(jd, profile)     # structured JSON
-       pdf = render(selection)                 # deterministic
+       best = tailor_loop(jd, profile)         # ≤ max_passes (2), keep best
+       pdf  = render(best.selection)           # deterministic, identity+selection
        POST /jobs/{id}/artifacts ─► TAILORED ─► PENDING_APPROVAL
    (remaining SCORED records wait for tomorrow's batch;
     SCORED untouched > stale_after_days ─► REJECTED)
@@ -719,7 +788,7 @@ Phase 2 replaces step 6's manual apply:
 | 1 | MCF adapter (`POST /v2/search`, Pydantic response model — fixes URL/JD quality immediately) | 0.6.0 |
 | 2 | Careers@Gov adapter (Algolia, referer headers — see `careers_gov_adapter.py`) | 0.6.0 |
 | 3 | FSM migration + artifacts table | 0.6.0 |
-| 4 | Profile-derived keywords; CV → profile.json parse | 0.6.0 |
+| 4 | Profile-derived keywords; CV → `profile.json` parse (superset; parse proposes `demonstrated_skills` per item, human-reviewed) | 0.6.0 |
 | 5 | Tailoring service (LLM JSON + PDF renderer, TDD) | 0.6.x |
 | 6 | Telegram approval flow (inline keyboards, PDF push) | 0.6.x |
 | 7 | JobStreet adapter (HTML parser or internal JSON endpoints, fixture-based tests) | 0.7.0 |
@@ -744,7 +813,11 @@ disallows automated access — verified live).
 3. Every external dependency (LLM, embedder, HTTP, browser) is injected and
    mocked in tests; `live`-marked tests are the only exception.
 4. The tailoring LLM may select and emphasise real profile content only —
-   never invent experience.
+   never invent experience. This is enforced **structurally**, not by prompt
+   alone: selection is by reference (`ref_id`s resolve to real entries), and text
+   rewrites are bounded by two deterministic guards (surfaced skills ⊆ the item's
+   `demonstrated_skills`; no new specifics vs the source). The LLM controls
+   phrasing, never claims.
 5. No LinkedIn automation of any kind — its robots.txt disallows automated
    access (verified live, 2026-06-10), and authenticated automation risks
    the personal account.
