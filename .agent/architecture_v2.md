@@ -1,0 +1,756 @@
+# Job Application Agent v2 — Architecture & Tech Stack
+
+---
+
+## What Changed From v1
+
+| | v1 (current) | v2 (this design) |
+|---|---|---|
+| Discovery | Tavily search API (search-result URLs, weak JDs) | Per-portal scraper adapters (real listing URLs, full JDs) |
+| Candidate data | `profile.json` shaped via chat | Canonical structured profile parsed once from CV; profile drives queries, scoring, and tailoring |
+| Scoring | Keyword overlap vs static config keywords | Profile-derived keywords → embedding similarity (upgrade path) |
+| Output | Job records in DB, queried on demand | Tailored CV PDF per job, pushed via Telegram |
+| Autonomy | None | Phase 1: autonomous scrape + tailor. Phase 2: autonomous apply behind approval gate |
+| Frontend | Telegram bot (pure transport) | Telegram bot (transport + approval gate + artifact delivery) |
+
+Unchanged: FastAPI backend, repository pattern, SHA-256 fingerprint dedup
+(mechanism kept; fingerprint *inputs* change — see § Deduplication),
+LiteLLM ReAct agent, stateless `POST /chat`, APScheduler in lifespan hook,
+TDD discipline, "scraper is dumb / reasoning lives in the agent /
+all writes go through the backend API".
+
+---
+
+## Core Design Principle: Pipeline State Machine
+
+Every job is a record moving through states. Autonomy is a config flag that
+skips the approval state — not a rewrite.
+
+```
+Pre-application (the automated pipeline):
+
+DISCOVERED → SCORED → TAILORED → PENDING_APPROVAL → APPLYING → APPLIED
+                │                  │       │            │
+                │                  │       │            └─ APPLY_FAILED → notify, manual
+                │                  │       └─ USER_SKIPPED (explicit decline)
+                │                  └─ EXPIRED (auto: no decision in pending_expiry_days)
+                └─ REJECTED (score below threshold)
+
+Post-application (human updates via Telegram + automatic time rules):
+
+APPLIED ──► INTERVIEWING ──► OFFER ──► ACCEPTED
+   │  │           │             │
+   │  │           ├─► REJECTED ◄┘
+   │  ├─► REJECTED│
+   │  │           │
+   │  └──► GHOSTED ◄──── (auto: status unchanged for ghost_after_days)
+   │           │
+   │           └─► INTERVIEWING   (resurrection — companies do reply late)
+   │
+   └─ day follow_up_after_days: follow-up draft pushed to Telegram
+      (an action prompt, not a state change)
+```
+
+- Phase 1 ships everything up to `PENDING_APPROVAL`. The user applies manually
+  via the link; Telegram buttons move the record to `APPLIED` or `USER_SKIPPED`.
+- Phase 2 adds the application worker. `[Apply for me]` transitions to `APPLYING`.
+- Full autonomy = `auto_apply: true` per source → `TAILORED` skips straight to `APPLYING`.
+- Post-application transitions come from the user in natural language
+  ("got an interview with PUB", "rejection email from GovTech") — the agent
+  resolves the record via `query_jobs`, then calls `update_status`.
+  `INTERVIEWING → INTERVIEWING` is legal (multiple rounds).
+- **The two clocks are different — this matters.** Time rules key off
+  `status_changed_at` (when the record entered its current status), NOT
+  `updated_at`. Follow-ups are recorded separately (`follow_up_count`,
+  `last_follow_up_at`) and **do not reset the ghost clock** — ghosting
+  measures *company* silence, not user activity. Otherwise every follow-up
+  would postpone ghosting indefinitely.
+- **Follow-up ladder (the point of tracking).** Deterministic daily check:
+  `status = APPLIED AND status_changed_at older than follow_up_after_days
+  AND follow_up_count = 0` → LLM drafts a short follow-up email from role,
+  company, and applied date → pushed to Telegram with the draft text and
+  `[Sent it] [Skip]` buttons. `[Sent it]` increments `follow_up_count` and
+  stamps `last_follow_up_at`; status stays `APPLIED`. Optional second nudge
+  at 2× the interval if `follow_up_count = 1`. The *check* is deterministic
+  and free; only the few jobs crossing the threshold each day cost an LLM
+  call (drafting is also available on demand via the `draft_followup` tool).
+- **Ghosting is deterministic, not an LLM decision.** Daily rule:
+  `status IN (APPLIED, INTERVIEWING) AND status_changed_at older than
+  ghost_after_days → GHOSTED` (default 35 days). Zero tokens, unit-testable,
+  cannot hallucinate. Each auto-ghost sends a one-line Telegram note.
+- **Expiry keeps the pending queue honest.** Daily rule: `PENDING_APPROVAL
+  older than pending_expiry_days (14) → EXPIRED` — listings close; jobs the
+  user never acted on must not clutter active queries forever. `EXPIRED`
+  ("never decided") is semantically distinct from `USER_SKIPPED` ("declined").
+- Full timeline for one job: day 0 applied → day 7 follow-up draft pushed →
+  (optional day 14 second nudge) → day 35 ghosted. Any real movement
+  (interview, rejection) resets `status_changed_at` and the ladder restarts
+  where relevant.
+- `query_jobs` defaults to the active pipeline (excludes `GHOSTED`,
+  `REJECTED`, `USER_SKIPPED`, `EXPIRED`); terminal states remain queryable
+  explicitly ("show me everything that ghosted me").
+
+State transitions are enforced at the model layer (same FSM pattern as v1 status
+transitions). Illegal transitions (e.g. `REJECTED → OFFER`) are rejected before
+any DB write.
+
+---
+
+## High-Level Architecture
+
+```
+                    ┌────────────────────────────────────────────┐
+                    │  Candidate Profile (source of truth)        │
+                    │  CV ──parse once──► profile.json            │
+                    │  LLM ──slow loop──► search_queries.json     │
+                    └───────┬──────────────┬──────────────┬───────┘
+                            │              │              │
+              query set ────┘       scoring input   tailoring input
+                            ▼              ▼              ▼
+┌──────────────┐   ┌──────────────────────────────────────────────┐
+│ APScheduler   │──►│            Pipeline Stages                   │
+│ (lifespan)    │   │                                              │
+│ · scrape daily│   │  Scraper Adapters ─► Scorer ─► Tailoring     │
+│ · tailor      │   │  (MCF API /          (pure     (LLM JSON →   │
+│ · follow-up   │   │   C@G Algolia /       fn)       PDF render)  │
+│ · lifecycle   │   │   JobStreet)                                 │
+│ · digest      │   │                                              │
+│ · apply (P2)  │   │                                              │
+└──────────────┘   └──────────┬───────────────────────────────────┘
+                              │ POST /jobs, PATCH status, artifacts
+                              ▼
+                   ┌────────────────────────────────────┐
+                   │  Backend API (FastAPI + repository) │
+                   │  jobs · artifacts · FSM · dedup     │
+                   └──────┬─────────────────────┬────────┘
+                          │                     │
+                          ▼                     ▼
+               ┌──────────────────┐   ┌─────────────────────────┐
+               │ Agent (LiteLLM    │   │ Telegram Bot             │
+               │ ReAct, POST /chat)│◄──│ · status pushes           │
+               │ tools: log_job,   │   │ · tailored CV PDF         │
+               │ query_jobs,       │   │ · inline approval buttons │
+               │ search_jobs,      │   │ · chat → POST /chat       │
+               │ tailor_resume,    │   └─────────────────────────┘
+               │ update_profile    │
+               └──────────────────┘
+                          │ Phase 2
+                          ▼
+               ┌─────────────────────────────┐
+               │ Application Worker           │
+               │ separate process, polls DB   │
+               │ Playwright + browser-use     │
+               └─────────────────────────────┘
+```
+
+---
+
+## Components
+
+### 1. Candidate Profile — the single source of truth
+
+**Responsibility:** Hold all candidate data in structured form. Every stage
+that needs "who is the candidate" reads from here — never from a PDF.
+
+- The CV is parsed **once** into `profile.json` (experiences, projects, skills,
+  education, contact). The CV file itself is just a rendering of this data;
+  tailored CVs are re-renderings of subsets of it.
+- Chat-driven updates continue via the agent's `update_profile` tool
+  (diff-checked, backup-on-change — unchanged from v1).
+- `search_queries.json` is derived from the profile by the LLM (see slow loop).
+  Versioned with backup-on-change, human-reviewable, vetoable.
+
+### 2. Scraper Layer — adapter pattern
+
+**Responsibility:** Fetch listings from portals and normalise to `JobCreate`.
+No reasoning, no DB writes, no scoring. Failure in one adapter logs and
+returns `[]` — never crashes the pipeline.
+
+```python
+class JobSource(Protocol):
+    name: str
+    async def fetch(self, query: str) -> list[JobCreate]: ...
+```
+
+**Confirmed scope: MyCareersFuture + JobStreet + Careers@Gov.** All three
+endpoints were live-tested on 2026-06-10; findings below.
+
+| Adapter | Method | Difficulty | Live-test result (2026-06-10) |
+|---|---|---|---|
+| MyCareersFuture | httpx → public JSON API | Easy | ✅ `GET api.mycareersfuture.gov.sg/v2/jobs` returned full JSON with **no auth and no bot challenge** |
+| Careers@Gov | httpx → **Algolia search API** | Easy | ✅ Full records (title, complete JD, agency, dept) via one POST; requires Referer header (see findings) |
+| JobStreet | httpx + HTML parsing (BeautifulSoup), or internal JSON endpoints | Medium | ✅ Search pages load on a plain GET and are server-rendered, but listing data lives in markup — needs a real parser |
+
+#### MCF live findings
+
+- `GET /v2/jobs` paginates the full firehose of newest listings (no filters
+  needed to receive data). Keyword search on the real site goes through
+  **`POST /v2/search`** with a JSON body — build the adapter against the
+  POST search endpoint, not GET query params.
+- Each record includes: full HTML `description` (the complete JD), salary
+  `minimum`/`maximum`/`salaryType`, `skills[]` from the curated government
+  taxonomy, `categories[]`, `employmentTypes[]`, **`positionLevels[]`
+  (including "Fresh/entry level" — a free entry-level filter)**, company UEN
+  + profile, district/region, posting/expiry dates, and a canonical
+  `metadata.jobDetailsUrl`.
+- This single source resolves the v1 Tavily limitations (search-result-page
+  URLs, missing JD text) outright. Expect the adapter to be ~50 lines of
+  httpx + a Pydantic response model.
+
+#### JobStreet live findings
+
+- A plain GET to `sg.jobstreet.com/{query}-jobs` returns a server-rendered
+  page (no hard block at low volume): job counts, salary ranges,
+  classifications, and recency are visible in the HTML.
+- Titles, companies, and listing URLs sit in markup attributes — naive text
+  extraction loses them. Use BeautifulSoup against the listing-card
+  structure, or preferably the internal JSON endpoints the site's own
+  frontend calls (inspect network tab).
+- Maintenance expectation: SEEK redesigns will break the parser
+  periodically. Pin selectors in one module; cover with fixture-based tests
+  so breakage is caught by CI, not in production.
+
+#### Careers@Gov live findings
+
+- The portal (`jobs.careers.gov.sg`) is a custom Next.js app. Job **search
+  runs on Algolia**, not Workday: app id `3OW7D8B4IZ`, index `job_index`,
+  public search-only API key embedded in the frontend (visible in the
+  site's own network requests).
+- The key is **referer-restricted**: requests without
+  `Referer: https://jobs.careers.gov.sg/` (+ matching `Origin`) get 403.
+  With those headers, a plain httpx POST returns 200 (verified live).
+- Omitting `attributesToRetrieve` returns **full records**: title, complete
+  JD text, `employmentType`, `agency` + `agencyAbbr`, `department`,
+  `jobSource`, `activityTimestamp`, `objectID`. `hitsPerPage` goes up to
+  1000 — one request typically covers an entire query ("engineer" = 758
+  hits, single page).
+- Detail URL is constructible from `objectID` (last path segment →
+  `jobs.careers.gov.sg/{slug}`). No second fetch needed for discovery.
+- `jobSource` reveals two upstream systems: **HRP** (internal HR platform;
+  Workday tenant `sggovterp.wd102.myworkdayjobs.com` handles applications)
+  and **GREENHOUSE** (commercial ATS with a fully public JSON API at
+  `boards-api.greenhouse.io`). Useful Phase 2 intelligence: these are the
+  two application-form systems the apply worker will meet for gov roles.
+- Operational notes: keep app id / api key / index in `.env` (the key is
+  public but rotates on redeploys); send the Referer headers as a matter of
+  course; throttle politely; fail soft to `[]` on 403 or key rotation.
+- Reference implementation: `careers_gov_adapter.py` (Pydantic models match
+  the verified payload).
+
+#### Excluded sources (deliberate)
+
+- **LinkedIn — excluded.** Live test returned `ROBOTS_DISALLOWED`:
+  LinkedIn's robots.txt explicitly forbids automated access to the
+  `jobs-guest` endpoints that scraping tutorials describe as "public."
+  The obstacle is policy, not technique. Excluding it also removes the
+  account-ban risk entirely.
+
+Rate limiting per adapter via configurable delay (carried over from v1 Tavily
+client). Each adapter is independently unit-testable with mocked HTTP.
+
+**Implementation playbook:** `adapters.md` — the reconnaissance method,
+the JobSource contract, test requirements, definition of done (including
+how to update this document), and per-portal work orders. New adapters are
+built by following that playbook; this section only records outcomes.
+
+### 3. Backend API — extended, not rewritten
+
+**Responsibility:** Source of truth for job records and artifacts. All writes
+from every component go through it.
+
+Schema changes:
+- `jobs.status` extended to the full pipeline FSM above.
+- New lifecycle columns on `jobs`: `status_changed_at` (stamped on every
+  status transition — the clock for follow-up/ghost/expiry rules),
+  `follow_up_count`, `last_follow_up_at` (follow-up activity, tracked
+  separately so it never resets the ghost clock), `seen_count` and
+  `last_seen_at` (stamped on duplicate ingest — liveness signal for the
+  lifecycle job).
+- New `artifacts` table: `(id, job_id FK, kind ['cv_pdf','cover_letter','follow_up_email'], path, created_at)`.
+- New endpoints: `POST /jobs/{id}/artifacts`, `GET /jobs?status=...` filter,
+  `POST /jobs/{id}/follow-up` (increments count, stamps timestamp).
+
+Repository pattern unchanged — SQLite now, PostgreSQL later touches one file.
+
+### 4. Scoring & Deduplication — pure functions
+
+**Scoring responsibility:** JD text vs candidate profile → **integer 0–10000**
+("basis points": internal float similarity × 10,000, rounded). Decides
+`DISCOVERED → SCORED` (≥ `score_threshold`) vs `REJECTED`.
+
+- v2.0: keyword overlap, but keywords **derived from profile.json** instead of
+  static config.
+- v2.1: embedding cosine similarity (JD text vs full profile text) — this is
+  what makes **adjacent roles** rank correctly despite low keyword overlap.
+- **Signature: `score(jd_text, profile) -> int` (0–10000).** Embeddings add a
+  model dependency: inject the embedder so tests pass a mock (same seam
+  pattern as `LLMClient` injection in the agent).
+
+Integer score contract:
+
+- **One conversion point.** The scorer itself does `round(similarity * 10_000)`
+  and returns the int. Floats never escape the function — the DB column
+  (INTEGER), `score_threshold` (e.g. 7000 = 0.70), ORDER BY, and Telegram
+  display all live in the same unit. This is the discipline that prevents
+  the classic scaled-value bug (comparing 7312 against 0.7).
+- **Why: an explicit noise floor.** Quantizing to 4 decimal places declares
+  that differences below 0.0001 are noise, not signal. Embedding jitter
+  (0.73120001 vs 0.73120000) collapses into a *true tie*, resolved by the
+  deterministic tiebreak (recency, then id) — the ranking never manufactures
+  an ordering out of float noise.
+- **Score once, store, never recompute.** Stamped at ingest; the daily
+  ranking only reads stored integers. Re-scoring would let embedding-model
+  drift shuffle the pool ranking between runs.
+- **NaN guard.** The one unit test that matters: empty keyword list (v2.0)
+  or zero vector (v2.1) → score returns `0`, never NaN.
+
+Daily tailor-pass selection (deterministic, hence testable):
+
+```sql
+SELECT ... WHERE status = 'SCORED'
+ORDER BY score DESC,      -- exact integer comparison
+         posted_at DESC,  -- tie-break 1: fresher listing has more runway
+         id ASC           -- tie-break 2: total determinism
+LIMIT :tailor_batch_size
+```
+
+**Deduplication responsibility:** decide whether an incoming record is a job
+the system has already considered. **v2 change: the URL is removed from the
+fingerprint.**
+
+```
+fingerprint = SHA-256( normalize(company) + normalize(title) )
+normalize   = prefer UEN for company when the portal provides it (MCF does);
+              else lowercase, strip punctuation, collapse whitespace
+```
+
+Why: dedup semantics follow *application* semantics — the question is "have
+I already considered this company + role?", not "is this the same row?".
+Three duplicate classes, one rule:
+
+| Case | What changes | URL-based fingerprint (v1) | Content fingerprint (v2) |
+|---|---|---|---|
+| Weekly rescrape, same listing | nothing | ✅ caught | ✅ caught |
+| **Repost** (listing expires, re-listed with new id/URL) | objectID + URL | ❌ slips through as "new" | ✅ caught — ignored, per design intent |
+| **Cross-portal** (gov jobs are cross-posted C@G ↔ MCF) | everything but content | ❌ ingested twice | ✅ caught |
+
+Notes:
+- The description is deliberately **excluded** from the hash: cross-portal
+  copies differ in HTML/whitespace and reposts carry minor edits, so a
+  description-inclusive hash misses exactly the duplicates that matter.
+- Same company + same title for a genuinely new opening months later is
+  *correctly* treated as duplicate — the user should not apply twice to the
+  same company + role regardless.
+- Company-name aliasing across portals ("PUB, The National Water Agency" vs
+  "PUB"): UEN solves it where available; otherwise a small alias map,
+  added lazily when a real collision is observed — not over-engineered
+  upfront.
+- **Duplicates are signal, not waste:** on a duplicate hit, the upsert stamps
+  `last_seen_at` and increments `seen_count` on the existing record instead
+  of discarding silently. "Still being seen" ≈ listing still live; the
+  lifecycle job can expire `SCORED` records faster once they stop appearing
+  in scrapes.
+- Both functions remain pure (no I/O); uniqueness is still enforced by the
+  DB constraint on `fingerprint`; the idempotent upsert in `POST /jobs` is
+  unchanged. Adapters never dedup (invariant 1).
+- Source-native identity (`objectID`, MCF uuid, portal URL) is kept in
+  `metadata` for traceability — it's an attribute of the record, not part
+  of its identity.
+
+### 5. Tailoring Service — LLM selects, code renders
+
+**Responsibility:** JD + profile → tailored CV PDF. Triggered for every job
+entering `TAILORED`.
+
+Two strictly separated steps:
+1. **LLM (LiteLLM, structured output):** selects and reorders content from
+   `profile.json` — which bullets, which projects, skill ordering, tailored
+   summary — guided by the incorporated skills (`resume-tailor`,
+   `resume-ats-optimizer`, `resume-section-builder`; see § Agent Brain). Output
+   is JSON validated against a Pydantic schema. The prompt constrains the LLM to
+   *select and emphasise only* — it may not invent experience.
+2. **Renderer (deterministic):** Jinja2 `.tex` template + `tectonic`
+   (alt: `latexmk`) → PDF. The template owns all LaTeX syntax; content strings
+   are LaTeX-escaped before substitution. The LLM can never break layout because
+   it never produces layout. (RenderCV — YAML → LaTeX PDF — remains a drop-in
+   alternative.)
+
+#### Score-driven tailoring loop
+
+Tailoring is iterative, bounded by `max_passes` (default **1**). The loop
+**reuses the existing scorer** — no new scoring concept. The scorer's contract
+is `score(jd_text, profile) -> int (0–10000)`; the loop calls it with the
+**tailored content** in place of the master profile, so it measures the tailored
+*projection* against the JD in the same basis-point unit as discovery scoring.
+
+```
+best = None
+for pass in range(max_passes):           # default max_passes = 1
+    tailored = llm_tailor(jd, profile, gap_hint)   # gap_hint empty on pass 0
+    s = score(jd_text, tailored)                   # reuse scorer, same 0–10000 unit
+    if best is None or s > best.score:
+        best = (tailored, s)
+    if s >= target_score:                 # good enough, stop early
+        break
+    gap_hint = missing_keywords(jd, tailored)       # feed the gap into next pass
+render(best.tailored)                      # render the BEST pass, not the last
+```
+
+- **Default is one pass:** tailor once, score once, render. Re-iteration only
+  happens if `max_passes > 1` *and* the first pass is below `target_score`.
+- **Keep the best pass, not the last.** A later pass can score lower; the loop
+  retains the highest-scoring result.
+- **The gap is fed forward.** Between passes, the ATS keyword model
+  (`resume-ats-optimizer`) computes which JD keywords the tailored output still
+  misses, and that gap is injected into the next tailoring prompt — closing the
+  loop between scoring and selection.
+- **Cost-bounded by construction.** `max_passes` caps LLM calls per job; with
+  the default of 1 this adds nothing over single-pass tailoring. Each pass is
+  one LLM call + one (cheap, deterministic) score call.
+
+This means ATS optimization is **not a separate gate** — it's the scorer applied
+to tailored output, with its keyword model also supplying the gap hint. Scoring
+appears in one place (the scorer); the loop just calls it on different inputs.
+
+Artifacts are written to disk, registered via `POST /jobs/{id}/artifacts`.
+
+Testing: mock the LLM, assert schema validity; snapshot-test the renderer.
+
+### 6. Telegram Bot — transport + approval gate
+
+**Responsibility:** All user-facing interaction. Still a thin layer — no
+business logic.
+
+- **Push (new):** when a job reaches `PENDING_APPROVAL`, send: role, company,
+  score, listing URL, tailored CV PDF attached, inline keyboard.
+  - Phase 1 buttons: `[Mark Applied]` `[Skip]` → `PATCH /jobs/{id}/status`.
+  - Phase 2 buttons: `[Apply for me]` `[Skip]`.
+- **Follow-up push (new):** when an `APPLIED` job hits `follow_up_after_days`
+  with no follow-up recorded, send: "Applied to {role} at {company} {n} days
+  ago, no response" + LLM-drafted follow-up email text (copy-paste ready) +
+  `[Sent it]` `[Skip]` buttons. `[Sent it]` → `POST /jobs/{id}/follow-up`.
+- **Chat (unchanged):** free-text messages forward to `POST /chat`; the agent
+  handles intent (query pipeline, update profile, trigger ad-hoc search,
+  draft a follow-up on demand).
+- Weekly digest job continues (pipeline summary, stale flags).
+
+### 7. Agent Brain — reasoning layer, NOT the orchestrator
+
+**The agent is not the orchestrator — APScheduler is.** The scheduler is the
+heartbeat: it drives the pipeline (scrape → score → tailor → lifecycle →
+follow-up) on a deterministic clock, calling the LLM only at the few stages
+that need judgement (tailoring selection, follow-up drafting, query
+regeneration). The agent is the *reactive reasoning layer* the scheduler — and
+the human — call into. It wakes on `POST /chat` (human intent) or when a
+budgeted pipeline stage requests a decision; it never owns the loop.
+
+Architecture unchanged: LiteLLM ReAct loop, stateless `POST /chat`, LLM
+proposes → backend validates → repository executes. New/changed tools:
+
+| Tool | Change |
+|---|---|
+| `search_jobs` | Now invokes scraper adapters directly (ad-hoc interactive search) |
+| `tailor_resume` | New — trigger tailoring for a specific job on demand |
+| `draft_followup` | New — draft a follow-up email for a specific job on demand ("draft a follow-up for the PUB role") |
+| `draft_cover_letter` | New — generate a cover letter for a specific job (JD + profile → `kind='cover_letter'` artifact) |
+| `regenerate_queries` | New — rebuild `search_queries.json` from current profile |
+| `query_jobs` | Gains status-filter awareness (pipeline states) |
+| `log_job`, `update_status`, `update_profile` | Unchanged |
+
+#### Incorporated skills — the agent's domain expertise
+
+Four skill playbooks are loaded into the resume/cover-letter stages as
+**system-prompt domain knowledge for the LLM selection step** — heuristics and
+guardrails, not callable functions. They inform *what the LLM selects and how
+it phrases it*; they never touch the deterministic renderer. This preserves
+invariants 2 and 4 (LLM selects/emphasises real content only; code validates
+and renders).
+
+| Skill | Feeds | What it contributes |
+|---|---|---|
+| `resume-tailor` | `tailor_resume` / tailoring pass (LLM step) | JD-vs-profile selection logic: reorder experience by relevance, rewrite the summary to mirror the role, lead with the most relevant bullets, integrate JD keywords truthfully. The core of the "select & emphasise only" step. |
+| `resume-ats-optimizer` | scorer (keyword model) + gap hint in the tailoring loop | Keyword taxonomy (hard / soft / industry), match-score logic, placement priority (summary → skills → bullets), ATS formatting rules. Not a separate gate: it sharpens the scorer, and its keyword model computes the missing-keyword gap fed into the next tailoring pass (see § Tailoring Service). |
+| `resume-section-builder` | tailoring pass (structure) | Section composition & ordering by career stage. For this user: **entry-level / technical / recent-graduate** profile — prioritise Skills + Projects, Education carries weight, 3–5 achievement bullets. Shapes the JSON structure the LLM emits. |
+| `cover-letter-generator` | `draft_cover_letter` | JD + profile → 250–400-word letter: hook, direct-match body, gap handling, call to action. Produces a distinct `cover_letter` artifact. |
+
+These skills constrain **content selection only**. The pipeline is:
+
+```
+skills (domain knowledge in system prompt)
+   ↓ guide
+LLM selection step ──► structured JSON  ──► Pydantic validation
+                                              ↓
+                                        LaTeX template (owns all syntax)
+                                              ↓
+                                        compile ──► PDF artifact
+```
+
+#### LaTeX output path (the deliverable is a LaTeX-rendered PDF)
+
+The end artifact is a **LaTeX-compiled CV PDF**, not HTML→PDF. To keep
+rendering deterministic and uncrashable:
+
+- **The LLM emits structured, escaped-safe content JSON — it does NOT write raw
+  LaTeX.** A Jinja2 `.tex` template owns every bit of LaTeX syntax; the LLM only
+  fills slots. This is the LaTeX equivalent of invariant 2: the LLM cannot break
+  layout because it never produces layout.
+- **Two classes of template slot — and only one is LLM-touched.**
+  - **Fixed (identity) slots** — name, email, phone, location, school, degree,
+    graduation date, links. Substituted **directly from `profile.json`**; the LLM
+    never sees or rewrites them. They are constant across every tailored CV; only
+    the profile (source of truth) can change them.
+  - **Variable (tailored) slots** — professional summary, which experience
+    bullets and in what order, which projects, skill ordering. These are the
+    *only* fields the LLM selection step populates, and only by selecting/
+    reordering/rephrasing real profile content (invariant 4).
+
+  The Pydantic schema encodes this split: identity fields are passed through
+  unmodified; tailored fields are the LLM's output surface. A tailored CV is
+  therefore `fixed(profile) + variable(LLM selection)` rendered through one
+  template.
+- **Escaping is mandatory.** Content strings are passed through a LaTeX-escape
+  pass (`& % $ # _ { } ~ ^ \`) before template substitution. An unescaped `&`
+  in a company name or a `%` in a bullet silently breaks compilation otherwise.
+- **Compile = `tectonic` (or `latexmk`), deterministic.** Template + escaped
+  JSON → `.tex` → compile → PDF → register via `POST /jobs/{id}/artifacts`.
+- **One template, entry-level.** A single entry-level / technical section order
+  (Skills + Projects prioritised, Education weighted, 3–5 achievement bullets).
+  No multi-template selection — that would reopen the "LLM affects layout"
+  question. Trimmed deliberately to match the user's actual target roles.
+- **Alternative (only if raw-LaTeX authoring is ever wanted):** let the LLM
+  write LaTeX directly, but then a sanitization + compile-retry loop is required
+  (compile, catch errors, feed back, re-emit). Higher token cost, nondeterministic,
+  not recommended at this scope. Template-owns-syntax is the default.
+
+#### Prompt files & cover letter
+
+- **Skills live as separate prompt files**, not inlined into one mega-prompt —
+  consistent with the existing `agent/prompts/system.md` + `{profile}` pattern.
+  `prompts/tailoring.md` (carries `resume-tailor` + `resume-ats-optimizer` +
+  `resume-section-builder` guidance) and `prompts/cover_letter.md` (carries
+  `cover-letter-generator`). Loaded only by the stage that needs them, so the
+  large playbook text isn't paid for on every chat call — only on tailoring /
+  cover-letter calls.
+- **Cover letter is plain text, not a compiled PDF.** It's a document-style
+  written artifact (`kind='cover_letter'`, `.txt`/`.md` body) delivered as text
+  via Telegram — no second LaTeX template. Still a real artifact record for the
+  audit trail; just not rendered.
+- **Tailoring is score-bounded** (`max_passes`, default 1) and **reuses the
+  scorer** rather than introducing an ATS gate — see § Tailoring Service.
+
+Testing: mock the LLM and assert the JSON validates against the Pydantic
+schema; snapshot-test the `.tex` template output; a single `live`-marked test
+actually compiles a fixture to PDF to catch template/escaping regressions.
+
+### 8. Application Worker — Phase 2
+
+**Responsibility:** Take records in `APPLYING`, drive a browser through the
+application form, transition to `APPLIED` or `APPLY_FAILED`.
+
+- **Separate process** from the FastAPI app (browser automation is heavy and
+  crash-prone). Polls the DB for `APPLYING` records — DB-as-queue, no Redis yet.
+- Stack: Playwright for deterministic steps + browser-use (or Stagehand) for
+  the AI-judgment steps (unfamiliar form fields, screening questions).
+- Reality: MCF/JobStreet apply buttons usually redirect to external ATS
+  (Workday, SuccessFactors, Greenhouse). The worker's real job is **generic
+  ATS form-filling**, portal-agnostic.
+- Every run writes a structured log (screenshots, actions taken) for audit.
+- Hard exclusion: LinkedIn. Authenticated automation there risks the account.
+
+### 9. Scheduling — two loops at two speeds
+
+**Slow loop (LLM, occasional):** on profile change or weekly — agent
+regenerates `search_queries.json` from the profile. One LLM call, auditable
+output, human-vetoable. This is where adjacent-role reasoning lives.
+
+**Fast loop (deterministic, daily):** APScheduler scrape job reads
+`search_queries.json`, fans out across adapters, ingests via `POST /jobs`
+(dedup happens here), scores, queues tailoring. **Zero LLM calls for
+discovery/ingest** — keeps it cheap, deterministic, and testable as plain
+functions (no scheduler in tests, same as v1).
+
+Scheduled jobs (all plain functions, tested without the scheduler):
+
+| Job | Cadence | LLM? | Does |
+|---|---|---|---|
+| scrape | daily | no | queries → adapters → `POST /jobs` → score → SCORED/REJECTED |
+| tailor | daily (after scrape) | yes (budgeted) | top-`tailor_batch_size` SCORED by score → tailor → PDF → PENDING_APPROVAL → Telegram push |
+| follow-up | daily | yes (small N) | `APPLIED` past `follow_up_after_days`, `follow_up_count = 0` → draft email → Telegram push with `[Sent it] [Skip]` |
+| lifecycle | daily | **no** | three deterministic time rules on `status_changed_at`: `PENDING_APPROVAL > pending_expiry_days → EXPIRED`; `SCORED > stale_after_days → REJECTED`; `APPLIED/INTERVIEWING > ghost_after_days → GHOSTED` (+ Telegram note) |
+| digest | weekly (Mon) | optional | pipeline summary: active states, follow-ups pending, recent ghosts/expiries |
+| query regen | weekly / on profile change | yes (1 call) | profile → `search_queries.json` |
+| apply (P2) | poll | per-form | `APPLYING` records → ATS form-fill → APPLIED/APPLY_FAILED |
+
+Note the split: the **follow-up check** is deterministic and free; only
+drafting the email (a handful of jobs/day at most) costs tokens. The
+**lifecycle job** never touches the LLM at all.
+
+---
+
+## Throughput & Cost Control
+
+The pipeline is a funnel, and every stage must be cheaper than the one after
+it. Rate limiting alone is the wrong tool — the design itself bounds the
+expensive stages.
+
+```
+~1000 discovered/day  ─ dedup (fingerprint, free) ──►  ~600 new
+                      ─ score threshold (pure fn) ──►  ~40 SCORED
+                      ─ tailor_batch_size (top-N) ──►  10 tailored/day
+                      ─ approval gate (human)     ──►  what you actually apply to
+```
+
+Three throttles, three layers:
+
+1. **Portal politeness (scrape side).** Configurable `delay_s` per adapter.
+   Volume is naturally low: MCF and Careers@Gov return up to ~1000 results
+   per request, so a daily run across ~8 queries × 3 portals is ~25 HTTP
+   requests total.
+2. **Provider limits (LLM side).** LiteLLM Router `rpm`/`tpm` settings +
+   exponential-backoff retries absorb burstiness against Gemini free-tier
+   caps. Mechanical, set once.
+3. **Fan-out budget (pipeline side — the one that matters).** The tailoring
+   pass processes the **top `tailor_batch_size` SCORED records by score, per
+   day** (default 10). Everything else stays in `SCORED` — the status column
+   *is* the queue; tomorrow's run takes the next batch. A staleness expiry
+   (`SCORED` untouched for 14 days → `REJECTED`) stops the backlog growing
+   unboundedly, since listings close anyway.
+
+Why a budget and not a rate limit: one tailoring call ≈ 5k tokens (JD ~1.5k +
+profile ~2k + output ~1k). Unbounded, 1000 jobs/day ≈ 5M tokens — past any
+free tier, producing PDFs nobody reads. Budgeted at 10/day ≈ 50k tokens —
+negligible. The true bottleneck is human review capacity (~5–10
+applications/day); `tailor_batch_size` is sized to the human, and LLM cost
+follows automatically.
+
+Settings: `tailor_batch_size=10`, `score_threshold=7000` (basis points,
+= 0.70), `follow_up_after_days=7`, `pending_expiry_days=14`,
+`stale_after_days=14`, `ghost_after_days=35`, per-adapter `delay_s`,
+LiteLLM `rpm`/`tpm`.
+
+---
+
+## Flow of Execution (Phase 1, steady state)
+
+```
+1. [weekly / on profile change]
+   Agent reads profile.json ─► generates search_queries.json (LLM, 1 call)
+
+2. [daily, APScheduler]
+   for query in search_queries.json:
+       for adapter in [MCF, CareersGov, JobStreet]:
+           raw = adapter.fetch(query)          # no LLM
+           POST /jobs (normalise → dedup → DISCOVERED)
+
+3. [same run]
+   for job in status=DISCOVERED:
+       s = score(job.description, profile)     # pure fn, int 0–10000
+       s >= score_threshold (7000) ? SCORED : REJECTED
+
+4. [tailoring pass — budgeted]
+   for job in top tailor_batch_size of status=SCORED (by score desc):
+       selection = llm_tailor(jd, profile)     # structured JSON
+       pdf = render(selection)                 # deterministic
+       POST /jobs/{id}/artifacts ─► TAILORED ─► PENDING_APPROVAL
+   (remaining SCORED records wait for tomorrow's batch;
+    SCORED untouched > stale_after_days ─► REJECTED)
+
+5. [Telegram push]
+   send(role, company, score, link, pdf, [Mark Applied] [Skip])
+
+6. [user taps button]
+   PATCH /jobs/{id}/status ─► APPLIED | USER_SKIPPED
+
+7. [post-application, ongoing]
+   user (Telegram chat): "got an interview with PUB" / "rejected by GovTech"
+       ─► agent: query_jobs to resolve record ─► update_status
+       ─► APPLIED → INTERVIEWING → OFFER → ACCEPTED | REJECTED
+       (every transition stamps status_changed_at)
+
+8. [follow-up job, daily — deterministic check, LLM only for drafting]
+   for job where status=APPLIED
+            AND status_changed_at older than follow_up_after_days
+            AND follow_up_count = 0:
+       draft = llm_draft_followup(role, company, applied_date)
+       Telegram push: context + draft email + [Sent it] [Skip]
+   [Sent it] ─► POST /jobs/{id}/follow-up
+       (follow_up_count += 1; status stays APPLIED;
+        ghost clock NOT reset — it runs on status_changed_at)
+
+9. [lifecycle job, daily — no LLM, three rules on status_changed_at]
+   PENDING_APPROVAL older than pending_expiry_days ─► EXPIRED
+   SCORED          older than stale_after_days     ─► REJECTED
+   APPLIED/INTERVIEWING older than ghost_after_days ─► GHOSTED + Telegram note
+   (GHOSTED → INTERVIEWING allowed if the company resurfaces)
+
+Phase 2 replaces step 6's manual apply:
+6'. [Apply for me] ─► APPLYING ─► worker fills ATS form ─► APPLIED | APPLY_FAILED
+    (auto_apply: true skips the approval push entirely)
+```
+
+---
+
+## Tech Stack
+
+| Layer | Technology | Status |
+|---|---|---|
+| Backend API | FastAPI, Pydantic v2, pydantic-settings | Keep |
+| Database | SQLite (aiosqlite) → PostgreSQL later | Keep |
+| Data access | Repository pattern, raw SQL | Keep |
+| Agent | LiteLLM (`gemini/gemini-2.5-flash-lite`), ReAct loop | Keep + new tools |
+| Scraping | httpx (MCF `POST /v2/search`; Careers@Gov Algolia) + httpx/BeautifulSoup (JobStreet) | **Replaces Tavily** |
+| Scoring | Pure Python → embeddings (injected embedder) | Upgrade |
+| Dedup | hashlib SHA-256 over normalized (company + title); `seen_count`/`last_seen_at` on duplicate hits | Changed inputs |
+| Tailoring LLM | LiteLLM structured output → Pydantic-validated JSON | New |
+| PDF rendering | Jinja2 `.tex` template + Tectonic/latexmk (alt: RenderCV) | New |
+| Notifications/UI | python-telegram-bot (inline keyboards, document upload) | Extend |
+| Apply automation | Playwright + browser-use, separate process | Phase 2 |
+| Scheduling | APScheduler (FastAPI lifespan) | Keep |
+| Logging | loguru | Keep |
+| Testing | pytest, pytest-asyncio, httpx; mocked LLM/embedder/HTTP | Keep |
+| Container | Docker | Keep |
+
+---
+
+## Build Order
+
+| Step | Deliverable | Version |
+|---|---|---|
+| 1 | MCF adapter (`POST /v2/search`, Pydantic response model — fixes URL/JD quality immediately) | 0.6.0 |
+| 2 | Careers@Gov adapter (Algolia, referer headers — see `careers_gov_adapter.py`) | 0.6.0 |
+| 3 | FSM migration + artifacts table | 0.6.0 |
+| 4 | Profile-derived keywords; CV → profile.json parse | 0.6.0 |
+| 5 | Tailoring service (LLM JSON + PDF renderer, TDD) | 0.6.x |
+| 6 | Telegram approval flow (inline keyboards, PDF push) | 0.6.x |
+| 7 | JobStreet adapter (HTML parser or internal JSON endpoints, fixture-based tests) | 0.7.0 |
+| 8 | Embedding-based scoring (injected embedder) | 0.7.x |
+| 9 | Application worker, approval-gated | 0.9.0 |
+| 10 | `auto_apply` flag — full autonomy per source | 1.0.0 |
+
+Note: MCF + Careers@Gov together cover the GovTech/GLC/public-service
+targets with the highest data quality per line of code — both are clean
+JSON adapters, live-verified. JobStreet broadens private-sector coverage
+at the cost of parser maintenance. LinkedIn is excluded (robots.txt
+disallows automated access — verified live).
+
+---
+
+## Invariants (carried over and extended)
+
+1. The scraper never reasons. The agent never writes to the DB directly.
+   All writes go through the backend API.
+2. The LLM proposes (tool calls, content selection); code validates and
+   executes (FSM, Pydantic schemas, renderer).
+3. Every external dependency (LLM, embedder, HTTP, browser) is injected and
+   mocked in tests; `live`-marked tests are the only exception.
+4. The tailoring LLM may select and emphasise real profile content only —
+   never invent experience.
+5. No LinkedIn automation of any kind — its robots.txt disallows automated
+   access (verified live, 2026-06-10), and authenticated automation risks
+   the personal account.
+6. A human approval gate sits before every application until `auto_apply`
+   is deliberately enabled per source.
+7. Every LLM-consuming stage is budgeted (`tailor_batch_size`, LiteLLM
+   `rpm`/`tpm`); rules that need no judgement (dedup, thresholds, expiry,
+   ghosting, the follow-up *check*) are deterministic code and never call
+   the LLM. The LLM drafts content; clocks run on `status_changed_at`.
