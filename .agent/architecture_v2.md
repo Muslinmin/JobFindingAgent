@@ -295,22 +295,17 @@ Repository pattern unchanged — SQLite now, PostgreSQL later touches one file.
   what makes **adjacent roles** rank correctly despite low keyword overlap.
 - **Signature: `score(jd_text, candidate) -> int` (0–10000).** Embeddings add a
   model dependency: inject the embedder so tests pass a mock (same seam
-  pattern as `LLMClient` injection in the agent). The scorer is reused at two
-  points: discovery (`score(jd, full_profile)`) and the tailoring loop
-  (`score(jd, tailored)`), via a `tailored → scorable_text` serializer.
+  pattern as `LLMClient` injection in the agent). The scorer runs **once, at
+  discovery** (`score(jd, full_profile)`). Tailoring does not re-score — the
+  three-tier structural controls are the correctness guarantee (see § Tailoring
+  Service).
 - **Discovery is a coarse filter by design.** `score_threshold` is deliberately
-  **lenient and configurable** — "plausibly relevant, let it through" — because
-  the precise relevance judgement is deferred to the tailored re-score
-  (see § Tailoring Service). The daily budget (`tailor_batch_size`), not the
-  threshold, is the real throttle.
-- **Two deferred scoring caveats** (flagged in `tailoring.md`, not solved at
-  0.6.x): (1) *ranking dilution* — once embeddings land (v2.1), mean-pooling the
-  bloated superset into one vector depresses good-fit jobs in the top-N ranking
-  even past a lenient gate; fix by ranking on profile *chunks* (top-k / max-pool)
-  at 0.7.x. (2) *maintain-or-beat reachability* — under v2.0 keyword overlap a
-  tailored subset cannot out-overlap its own superset on raw count, so the loop's
-  `target_score` needs a coverage *ratio* or a tolerance under v2.0; it is
-  meaningful as-is under v2.1 embeddings.
+  **lenient and configurable** — "plausibly relevant, let it through." The daily
+  budget (`tailor_batch_size`), not the threshold, is the real throttle.
+- **Deferred (0.7.x):** once embeddings land (v2.1), mean-pooling the bloated
+  superset into one vector can depress good-fit jobs in the top-N ranking even
+  past a lenient gate; fix by ranking on profile *chunks* (top-k / max-pool)
+  at 0.7.x.
 
 Integer score contract:
 
@@ -411,61 +406,35 @@ Two strictly separated steps:
    it never produces layout. (RenderCV — YAML → LaTeX PDF — remains a drop-in
    alternative.)
 
-#### Score-driven tailoring loop
+#### Single-pass tailoring call
 
-Tailoring is iterative, bounded by `max_passes` (default **2**). The loop
-**reuses the existing scorer** — no new scoring concept. The scorer's contract
-is `score(jd_text, candidate) -> int (0–10000)`; the loop calls it with the
-**tailored content** in place of the master profile, so it measures the tailored
-*projection* against the JD in the same basis-point unit as discovery scoring.
-The only adapter needed is a `tailored → scorable_text` serializer (resolve the
-selection's `ref_id`s, assemble the text).
+Tailoring is **one LLM call, no iteration**. The correctness guarantee is
+structural — the three-tier model and guards — not a scoring loop.
 
 ```
-best = None
-for pass in range(max_passes):              # max_passes = 2
-    tailored = llm_tailor(jd, profile, gap_hint)   # gap_hint empty on pass 0
-    s = score(jd_text, tailored)                   # reuse scorer, same 0–10000 unit
-    if best is None or s > best.score + EPS:       # no-improvement guard
-        best = (tailored, s)
-    else:
-        break                                      # converged — stop early
-    if s >= target_score:                          # good enough — stop early
-        break
-    gap_hint = missing_keywords(jd, tailored)       # in-profile, unselected keywords
-render(best.tailored)                      # render the BEST pass, not the last
+tailored = llm_tailor(jd, profile)     # one LLM call
+validate_schema(tailored)              # Pydantic — TailoredSelection
+validate_guards(tailored, profile)     # ref_id integrity + skill-subset + no-new-specifics
+render(tailored, profile)              # identity + resolved selection → PDF
 ```
 
-- **`max_passes = 2`, a circuit breaker not a mechanism.** Selecting from a
-  *fixed* superset against a *fixed* JD has a hard achievable ceiling reached in
-  1–2 passes; more passes burn tokens for nothing. The real economiser is the
-  **no-improvement guard** (`EPS`): stop the moment a pass fails to beat the best.
-- **`target_score` = the job's initial discovery score** ("maintain or beat").
-  It doubles as the single tailored-quality bar — there is no separate
-  `tailored_configuration_score`.
-- **Keep the best pass, not the last.** A later pass can score lower; the loop
-  retains the highest-scoring result.
-- **The gap is fed forward, but it is *in-profile, unselected* keywords** — true
-  content the projection left on the table, never content to invent. The ATS
-  keyword model (`resume-ats-optimizer`) computes it from the tailored output.
-- **Below-bar behaviour: deliver anyway, show the score.** If the best of 2
-  passes still misses `target_score`, the CV is still pushed to approval with the
-  score visible in the Telegram card — the tokens are spent and the human decides
-  at the gate. Reachability caveat: "maintain or beat" is meaningful under
-  embeddings (v2.1); under v2.0 keyword overlap a subset cannot out-overlap its
-  own superset on raw count, so v2.0 needs a coverage *ratio* or a tolerance (see
-  § Scoring, deferred).
+**Guard violation → log and fail cleanly.** If any guard fires, the attempt
+is logged (loguru) and the job is marked failed. No retry, no partial render.
+The failure surfaces through the existing pipeline notification path. A guard
+breach means the LLM fabricated a claim; re-prompting the same input is
+unlikely to fix a structural hallucination.
 
-This means ATS optimization is **not a separate gate** — it's the scorer applied
-to tailored output, with its keyword model also supplying the gap hint. Scoring
-appears in one place (the scorer); the loop just calls it on different inputs.
+This means ATS optimization is **not a separate gate** and there is no
+post-tailor re-score. The scorer runs once at discovery; the structural guards
+are the tailoring-quality guarantee.
 
 Artifacts are written to disk, registered via `POST /jobs/{id}/artifacts`.
 
 Testing: mock the LLM, assert schema validity; snapshot-test the renderer.
 Additional guards (see `tailoring.md` § invariants): every `ref_id` resolves to a
 real profile entry; skill terms surfaced in tailored text ⊆ that item's
-`demonstrated_skills`; no new numerals/named entities vs the source item.
+`demonstrated_skills`; no new numerals/named entities vs the source item. Guard
+violation → logged, job marked failed, no partial render.
 
 ### 6. Telegram Bot — transport + approval gate
 
@@ -601,9 +570,8 @@ rendering deterministic and uncrashable:
   written artifact (`kind='cover_letter'`, `.txt`/`.md` body) delivered as text
   via Telegram — no second LaTeX template. Still a real artifact record for the
   audit trail; just not rendered.
-- **Tailoring is score-bounded** (`max_passes`, default 2, plus a no-improvement
-  guard) and **reuses the scorer** rather than introducing an ATS gate — see
-  § Tailoring Service.
+- **Tailoring is a single-pass call** — one LLM call, structural guards, no
+  re-score. See § Tailoring Service.
 
 Testing: mock the LLM and assert the JSON validates against the Pydantic
 schema; snapshot-test the `.tex` template output; a single `live`-marked test
@@ -691,8 +659,7 @@ applications/day); `tailor_batch_size` is sized to the human, and LLM cost
 follows automatically.
 
 Settings: `tailor_batch_size=10`, `score_threshold=7000` (basis points,
-= 0.70, lenient by design), `max_passes=2`, `target_score` (defaults to the
-job's initial discovery score), `EPS` (no-improvement floor, tuned empirically),
+= 0.70, lenient by design), `save_debug_artifacts=false`,
 `follow_up_after_days=7`, `pending_expiry_days=14`,
 `stale_after_days=14`, `ghost_after_days=35`, per-adapter `delay_s`,
 LiteLLM `rpm`/`tpm`.
@@ -718,9 +685,10 @@ LiteLLM `rpm`/`tpm`.
 
 4. [tailoring pass — budgeted]
    for job in top tailor_batch_size of status=SCORED (by score desc):
-       best = tailor_loop(jd, profile)         # ≤ max_passes (2), keep best
-       pdf  = render(best.selection)           # deterministic, identity+selection
+       tailored = tailor_once(jd, profile)         # one LLM call + guard validation
+       pdf      = render(tailored, profile)         # deterministic: identity + resolved selection
        POST /jobs/{id}/artifacts ─► TAILORED ─► PENDING_APPROVAL
+       on guard violation: log + fail cleanly, no render
    (remaining SCORED records wait for tomorrow's batch;
     SCORED untouched > stale_after_days ─► REJECTED)
 

@@ -22,7 +22,7 @@ claims*. A deterministic renderer turns the selection into a LaTeX PDF.
 |---|---|
 | **Decision** | `profile.json` holds everything truthful — every project (large or small), every skill, including ATS-variant surface forms of the *same* real competence (`PostgreSQL`/`Postgres`, `REST`/`RESTful`, `CI/CD`). Tailoring selects a subset; it never adds content. |
 | **Rationale** | The only ethical source of any keyword is the candidate's own history. A "missing keyword" can therefore only mean *true content not yet selected*, never *content to invent*. Reframing the loop around selection makes invariant 4 (no invented experience) **structurally impossible to violate** rather than prompt-enforced. |
-| **Consequence** | "`gap_hint`" survives but flips meaning: it is "JD keywords present in the superset but absent from the current selection" — always legitimately closable. |
+| **Consequence** | The profile superset + the three-tier guards are the complete correctness guarantee. No scoring pass after tailoring is needed — the structural controls are sufficient. |
 
 ---
 
@@ -77,40 +77,37 @@ number is flagged.
 
 ---
 
-## 5. Scoring: one scorer, reused
+## 5. Scoring: discovery only
 
 | | |
 |---|---|
-| **Decision** | There is exactly one scorer, `score(jd_text, candidate) -> int (0–10000)`. Discovery calls `score(jd, full_profile)`; the tailoring loop calls `score(jd, tailored)`. No second scoring concept, no ATS gate. |
-| **Seam** | The only adapter needed is a `tailored → scorable_text` serializer: resolve the selection's `ref_id`s, assemble the tailored text, hand it to the same scorer. |
-| **Discovery is a coarse filter by design** | The discovery threshold is **lenient and configurable** — "plausibly relevant, let it through." Precise judgement is deferred to the tailored re-score. This sidesteps the embedding-dilution problem: a depressed whole-profile score against a low threshold is acceptable. |
+| **Decision** | The scorer runs **once, at discovery** — `score(jd_text, full_profile) -> int (0–10000)`. Tailoring does **not** re-score. |
+| **Rationale** | The three-tier model (§2) + `demonstrated_skills` (§3) is the correctness guarantee. A post-tailor re-score would be redundant validation on top of structural enforcement, and adds complexity (serializer, loop, target, settings) with no truthfulness benefit. |
+| **Discovery threshold** | Lenient and configurable (`score_threshold`). Discovery is a coarse filter — "plausibly relevant, let it through." The daily budget (`tailor_batch_size`) is the real throttle, not the threshold. |
+| **Deferred (0.7.x)** | Once embeddings land (v2.1), mean-pooling the bloated superset into one vector can depress good-fit jobs in the top-N ranking. Fix: rank on profile *chunks* (top-k / max-pool similarity), not one pooled blob. |
 
 ---
 
-## 6. The tailoring loop
+## 6. The tailoring call (single pass)
 
 ```
-best = None
-for pass in range(max_passes):              # max_passes = 2
-    tailored = llm_tailor(jd, profile, gap_hint)   # gap_hint empty on pass 0
-    s = score(jd_text, tailored)                   # reuse scorer, 0–10000
-    if best is None or s > best.score + EPS:       # no-improvement guard
-        best = (tailored, s)
-    else:
-        break                                      # converged, stop early
-    if s >= target_score:                          # good enough, stop early
-        break
-    gap_hint = missing_keywords(jd, tailored)      # in-profile, unselected
-render(best.tailored)                              # render BEST, not last
+tailored = llm_tailor(jd, profile)     # one LLM call; no iteration
+validate_schema(tailored)              # Pydantic — TailoredSelection
+validate_guards(tailored, profile)     # ref_id integrity + skill-subset + no-new-specifics
+render(tailored, profile)              # deterministic: identity + resolved selection → PDF
 ```
 
-| Setting | Value | Reason |
-|---|---|---|
-| `max_passes` | **2** | Selecting from a *fixed* superset against a *fixed* JD has a hard achievable ceiling reached in 1–2 passes; more passes burn tokens for nothing. A true circuit breaker, not the mechanism. |
-| `target_score` | = the job's **initial discovery score** ("maintain or beat") | Doubles as the single tailored-quality bar. There is no separate `tailored_configuration_score`. |
-| `EPS` (no-improvement) | small, tune empirically | The *real* cost guard: stop the moment a pass fails to beat the best so far. |
-| keep-best | always | A later pass can score lower; render the highest-scoring result. |
-| below-bar behaviour | **deliver anyway, show the score** | Tokens are already spent; a 0.64 tailored CV with the number visible in the Telegram card is more useful than silently dropping it. The human decides at the approval gate. |
+**Guard violation → log and fail cleanly.** If any guard fires, the job is
+logged (loguru) and the tailoring attempt is marked failed. No retry, no
+partial render. The failure surfaces through the existing pipeline notification
+path. A guard breach means the LLM fabricated a claim; re-prompting the same
+input is unlikely to fix a structural hallucination and would burn an extra call
+for nothing.
+
+**Debug artifacts.** When `save_debug_artifacts=true` (configurable, default
+off), the intermediate `.tex` file and any failed LLM outputs are written to a
+`debug/` folder beside the final PDF. Intended for local iteration, not
+production.
 
 ---
 
@@ -196,8 +193,8 @@ containment, no-new-specifics diff against `Profile`.
 3. No numeral or named entity appears in tailored text that is absent from the source item.
 4. Identity fields in the render model are byte-identical to `profile.json`.
 5. LLM output validates against the `TailoredSelection` schema (mock the LLM).
-6. Scorer returns `0`, never `NaN`, on empty keywords (v2.0) / zero vector (v2.1).
-7. The loop keeps the best pass, not the last, and always terminates within `max_passes`.
+6. Scorer returns `0`, never `NaN`, on empty keywords (v2.0) / zero vector (v2.1) — applies at discovery.
+7. A guard violation logs and fails cleanly; no partial render is produced and no retry is attempted.
 8. `.tex` template output is snapshot-stable; one `live`-marked test compiles a fixture to PDF (catches escaping/template regressions).
 
 ---
@@ -206,8 +203,5 @@ containment, no-new-specifics diff against `Profile`.
 
 | Item | When | Note |
 |---|---|---|
-| v2.0 "maintain-or-beat" reachability | before embeddings | A subset cannot out-overlap its own superset on raw keyword *count*. Normalise v2.0 to a coverage **ratio** (covered ÷ relevant) or set `target_score` as a tolerance below the full-profile score. Meaningful as-is under embeddings (v2.1). |
-| Discovery **ranking** dilution | 0.7.x | A lenient gate fixes the gate, not the top-N ranking. Once embeddings land, rank on profile **chunks** (top-k / max-pool similarity), not one pooled blob. |
+| Discovery **ranking** dilution | 0.7.x | A lenient gate fixes the gate, not the top-N ranking. Once embeddings land (v2.1), rank on profile **chunks** (top-k / max-pool similarity), not one pooled blob. |
 | `demonstrated_skills` authoring | step 4 | Manual vs parse-proposed-then-reviewed. Tie to CV→profile parse. |
-| `EPS` no-improvement threshold | tuning | Set empirically once real tailored outputs exist. |
-| Does `max_passes > 1` ever pay? | empirical | Ship `max_passes` configurable, default 2; let real output show whether a second pass earns its tokens. A single well-prompted pass handed the JD keywords + full superset may suffice. |
