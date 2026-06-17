@@ -115,25 +115,26 @@ any DB write.
 │ · follow-up   │   │   C@G Algolia /       fn)       PDF render)  │
 │ · lifecycle   │   │   JobStreet)                                 │
 │ · digest      │   │                                              │
+│ · session-flsh│   │                                              │
 │ · apply (P2)  │   │                                              │
 └──────────────┘   └──────────┬───────────────────────────────────┘
                               │ POST /jobs, PATCH status, artifacts
                               ▼
-                   ┌────────────────────────────────────┐
-                   │  Backend API (FastAPI + repository) │
-                   │  jobs · artifacts · FSM · dedup     │
-                   └──────┬─────────────────────┬────────┘
+                   ┌────────────────────────────────────────────┐
+                   │  Backend API (FastAPI + repository)         │
+                   │  jobs · artifacts · FSM · dedup ·           │
+                   │  conversations · sessions · pending_pushes  │
+                   └──────┬─────────────────────┬────────────────┘
                           │                     │
                           ▼                     ▼
-               ┌──────────────────┐   ┌─────────────────────────┐
-               │ Agent (LiteLLM    │   │ Telegram Bot             │
-               │ ReAct, POST /chat)│◄──│ · status pushes           │
-               │ tools: log_job,   │   │ · tailored CV PDF         │
-               │ query_jobs,       │   │ · inline approval buttons │
-               │ search_jobs,      │   │ · chat → POST /chat       │
-               │ tailor_resume,    │   └─────────────────────────┘
-               │ update_profile    │
-               └──────────────────┘
+               ┌──────────────────────┐   ┌─────────────────────────┐
+               │ Agent (LiteLLM ReAct, │   │ Telegram Bot (transport)│
+               │ POST /chat)           │◄──│ · renders pushes/PDFs    │
+               │ ConversationContext   │   │ · inline buttons         │
+               │ (build/record turns)  │   │ · /start /end commands   │
+               │ tools: query_jobs,    │──►│ · relays chat → /chat    │
+               │ tailor_resume, …      │   │ (no logic, no history)   │
+               └──────────────────────┘   └─────────────────────────┘
                           │ Phase 2
                           ▼
                ┌─────────────────────────────┐
@@ -278,6 +279,9 @@ Schema changes:
   `last_seen_at` (stamped on duplicate ingest — liveness signal for the
   lifecycle job).
 - New `artifacts` table: `(id, job_id FK, kind ['cv_pdf','cover_letter','follow_up_email'], path, created_at)`.
+- New `conversations` table: `(chat_id, session_id, turn_index, role, content, created_at)` — conversation turns per session (see § 7). Reference-resolution only; never holds authoritative facts.
+- New `sessions` table: `(session_id, chat_id, started_at, ended_at NULL)` — session lifecycle for `/start` / `/end` / idle-timeout.
+- New `pending_pushes` table: `(id, chat_id, push_type, payload, created_at, delivered_at NULL)` — pushes held during an active conversation (see § 8).
 - New endpoints: `POST /jobs/{id}/artifacts`, `GET /jobs?status=...` filter,
   `POST /jobs/{id}/follow-up` (increments count, stamps timestamp).
 
@@ -436,25 +440,140 @@ real profile entry; skill terms surfaced in tailored text ⊆ that item's
 `demonstrated_skills`; no new numerals/named entities vs the source item. Guard
 violation → logged, job marked failed, no partial render.
 
-### 6. Telegram Bot — transport + approval gate
+### 6. Telegram Bot — transport layer (thin)
 
-**Responsibility:** All user-facing interaction. Still a thin layer — no
-business logic.
+**Core principle:** Telegram is transport only. It moves messages between the
+user and the backend and renders what it is handed. It holds **no business
+logic, no pipeline state, and no conversation history**. Every decision about
+*what* to say, *which* job a reply refers to, or *when* a session begins lives
+above it (agent + repository). If a behaviour requires a decision, it does not
+belong in this layer.
 
-- **Push (new):** when a job reaches `PENDING_APPROVAL`, send: role, company,
-  score, listing URL, tailored CV PDF attached, inline keyboard.
+#### What the Telegram layer IS responsible for
+
+1. **Inbound transport.** Receive a user message (text or button callback),
+   attach the `chat_id`, forward to the backend (`POST /chat` for text;
+   `PATCH /jobs/{id}/status` or the relevant endpoint for button callbacks —
+   the callback payload carries the `job_id`, so button actions need no
+   conversation context and are always unambiguous).
+2. **Outbound transport.** Send backend-produced messages to the chat:
+   deliver text, attach PDF/document artifacts, render inline keyboards.
+3. **Telegram-flavoured rendering only.** Turn already-decided content into
+   Telegram markdown, button layouts, and document uploads. This is the one
+   kind of "formatting" it owns — *rendering*, never *structuring*. It does
+   not decide what goes into a digest or how a follow-up reads; it renders the
+   finished string.
+4. **Command surface.** Expose `/start` and `/end` (session boundaries, below)
+   and map button taps to backend calls. Commands are forwarded, not
+   interpreted — the session lifecycle itself is owned by the backend.
+
+#### What the Telegram layer is NOT responsible for
+
+- **Not** conversation history — it never stores or appends turns (see § 7).
+- **Not** deciding which job a free-text reply refers to — the agent resolves
+  references from session context.
+- **Not** content structuring — digest contents, follow-up wording, push copy
+  are produced upstream (template or agent) and handed down as finished text.
+- **Not** pipeline state — job status is authoritative in the DB; Telegram
+  reflects it, never holds it.
+
+#### Push notifications (system-initiated messages)
+
+These are produced by scheduled jobs and pushed through Telegram. Each carries
+a self-labelling header (role + company) so it is interpretable even out of
+conversational context.
+
+- **Tailored job ready** (`PENDING_APPROVAL`): role, company, score, listing
+  URL, tailored CV PDF, inline keyboard.
   - Phase 1 buttons: `[Mark Applied]` `[Skip]` → `PATCH /jobs/{id}/status`.
   - Phase 2 buttons: `[Apply for me]` `[Skip]`.
-- **Follow-up push (new):** when an `APPLIED` job hits `follow_up_after_days`
-  with no follow-up recorded, send: "Applied to {role} at {company} {n} days
-  ago, no response" + LLM-drafted follow-up email text (copy-paste ready) +
-  `[Sent it]` `[Skip]` buttons. `[Sent it]` → `POST /jobs/{id}/follow-up`.
-- **Chat (unchanged):** free-text messages forward to `POST /chat`; the agent
-  handles intent (query pipeline, update profile, trigger ad-hoc search,
-  draft a follow-up on demand).
-- Weekly digest job continues (pipeline summary, stale flags).
+- **Follow-up draft** (`APPLIED` + `follow_up_after_days`, none sent yet):
+  context line + LLM-drafted email text (copy-paste ready) + `[Sent it]`
+  `[Skip]`. `[Sent it]` → `POST /jobs/{id}/follow-up`.
+- **Auto-ghost notice** (informational): one line, no buttons.
+- **Weekly digest** (informational): pipeline summary.
 
-### 7. Agent Brain — reasoning layer, NOT the orchestrator
+Push *delivery timing* relative to an active conversation is governed by § 8
+(it is not a Telegram-layer decision — Telegram just sends what the delivery
+rule releases to it).
+
+### 7. Conversation Sessions & History
+
+History exists for exactly one job: **resolving references** ("that one",
+"the third", "make it more formal") across a handful of recent turns. It is
+**not** a memory of the job search — every durable fact lives in the DB and is
+queried live. This narrow mandate is what lets sessions be cleared freely
+without losing anything real.
+
+Three responsibilities, three homes (dependency arrows point downward only):
+
+- **Storage — repository.** A `conversations` table keyed by
+  `(chat_id, session_id, turn_index)`. `append_turn(...)`,
+  `get_session_turns(session_id)`. Durable, so an app restart mid-session
+  loses nothing. Storage knows nothing about windowing or the LLM.
+- **Assembly — agent layer (`ConversationContext` module).** Owns
+  `build_context(session_id) -> messages[]` (load the current session's turns,
+  assemble into the LLM messages array) and `record(session_id, role, content)`
+  (append a turn). The ReAct loop calls these; it never trims inline. Isolating
+  the policy here means a future summarise-on-eviction upgrade touches one
+  module. v1 policy is trivial: **load the whole current session** — `/end`
+  keeps sessions short, so no within-session windowing is needed yet. The
+  `ConversationContext` seam exists from day one; its policy stays dumb until a
+  real marathon session forces an upgrade.
+- **Reference-resolution — emergent.** No component of its own: with recent
+  turns in the assembled context, the LLM resolves "that one" during normal
+  inference.
+
+**Sessions.** `/start` opens a session; `/end` closes it. **Auto-open** is the
+default: a message with no open session implicitly starts one, so quick
+one-shot queries ("anything ghosted?") need no ceremony. `/start` then means
+"explicitly begin fresh"; `/end` means "I'm done — forget the references"
+(facts already persisted to the DB are untouched). A session is also
+considered closed by **idle-timeout** (no user turn for `session_idle_minutes`),
+checked by the scheduler so a walked-away user's session self-heals.
+
+The endpoint stays stateless: `ConversationContext` rehydrates the session from
+the DB on every `POST /chat` call.
+
+### 8. Push Delivery & Conversation Coexistence
+
+The hard problem: a scheduled push can fire **while the user is mid-conversation
+about a different job**. Injecting it into the thread interleaves two subjects
+and makes the next "tailor that one" ambiguous. The rule:
+
+> **Notification can always fire; injection into the chat thread waits for a
+> clean moment.** An active conversation is never interrupted by content — only
+> by a lightweight signal that content is waiting.
+
+Two delivery modes, chosen by conversation state at push time:
+
+- **Idle / no active conversation:** deliver the push in full immediately
+  (implicit `/start` if no session is open). Normal path.
+- **Active conversation:** do **not** inject the push. Enqueue it
+  (repository-backed pending-push queue, keyed by `chat_id`, durable) and
+  surface only a **single coalesced nudge** — one message that ticks up
+  ("📥 1 item waiting" → "📥 2 items waiting", edited in place, never one
+  notification per push). Flush the queue in full when the conversation ends.
+
+"Conversation ends" = `/end` (express lane) **or** idle-timeout (safety net,
+via a small periodic scheduler check: any chat idle past the threshold with
+queued pushes → flush). Buttons are exempt from all of this: a button tap
+carries its own `job_id` and is always unambiguous, so push *responses* via
+buttons work regardless of conversation state — only free-text replies to a
+push needed protecting, which this design provides.
+
+**Uniform hold policy (v1):** every push type may be held during an active
+conversation; none overrides. All current pushes (tailored CV, follow-up draft,
+ghost notice, digest) tolerate a short delay. *Note for future push types:* if
+a genuinely time-critical push is ever added, it must explicitly opt out of
+holding — silence-inheriting the wrong behaviour is the trap to avoid.
+
+Pending-push queue (repository): `(chat_id, push_type, payload, created_at,
+delivered_at NULL)`. Durable across restarts. The flush is a step in the
+session-end handler and in the idle-timeout scheduler job — Telegram only sends
+what the flush releases.
+
+### 9. Agent Brain — reasoning layer, NOT the orchestrator
 
 **The agent is not the orchestrator — APScheduler is.** The scheduler is the
 heartbeat: it drives the pipeline (scrape → score → tailor → lifecycle →
@@ -577,7 +696,7 @@ Testing: mock the LLM and assert the JSON validates against the Pydantic
 schema; snapshot-test the `.tex` template output; a single `live`-marked test
 actually compiles a fixture to PDF to catch template/escaping regressions.
 
-### 8. Application Worker — Phase 2
+### 10. Application Worker — Phase 2
 
 **Responsibility:** Take records in `APPLYING`, drive a browser through the
 application form, transition to `APPLIED` or `APPLY_FAILED`.
@@ -592,7 +711,7 @@ application form, transition to `APPLIED` or `APPLY_FAILED`.
 - Every run writes a structured log (screenshots, actions taken) for audit.
 - Hard exclusion: LinkedIn. Authenticated automation there risks the account.
 
-### 9. Scheduling — two loops at two speeds
+### 11. Scheduling — two loops at two speeds
 
 **Slow loop (LLM, occasional):** on profile change or weekly — agent
 regenerates `search_queries.json` from the profile. One LLM call, auditable
@@ -614,6 +733,7 @@ Scheduled jobs (all plain functions, tested without the scheduler):
 | lifecycle | daily | **no** | three deterministic time rules on `status_changed_at`: `PENDING_APPROVAL > pending_expiry_days → EXPIRED`; `SCORED > stale_after_days → REJECTED`; `APPLIED/INTERVIEWING > ghost_after_days → GHOSTED` (+ Telegram note) |
 | digest | weekly (Mon) | optional | pipeline summary: active states, follow-ups pending, recent ghosts/expiries |
 | query regen | weekly / on profile change | yes (1 call) | profile → `search_queries.json` |
+| session-flush | every few min | **no** | any chat idle past `session_idle_minutes` → close session + flush pending-push queue (see § 8) |
 | apply (P2) | poll | per-form | `APPLYING` records → ATS form-fill → APPLIED/APPLY_FAILED |
 
 Note the split: the **follow-up check** is deterministic and free; only
@@ -661,8 +781,8 @@ follows automatically.
 Settings: `tailor_batch_size=10`, `score_threshold=7000` (basis points,
 = 0.70, lenient by design), `save_debug_artifacts=false`,
 `follow_up_after_days=7`, `pending_expiry_days=14`,
-`stale_after_days=14`, `ghost_after_days=35`, per-adapter `delay_s`,
-LiteLLM `rpm`/`tpm`.
+`stale_after_days=14`, `ghost_after_days=35`, `session_idle_minutes=30`,
+per-adapter `delay_s`, LiteLLM `rpm`/`tpm`.
 
 ---
 
@@ -795,3 +915,11 @@ disallows automated access — verified live).
    `rpm`/`tpm`); rules that need no judgement (dedup, thresholds, expiry,
    ghosting, the follow-up *check*) are deterministic code and never call
    the LLM. The LLM drafts content; clocks run on `status_changed_at`.
+8. Telegram is transport only — it renders and relays, never decides. No
+   business logic, no pipeline state, no conversation history in the
+   Telegram layer.
+9. The DB is the source of truth; the conversation transcript is disposable.
+   Every durable fact lives in a column (reached via a tool like
+   `update_status`), never solely in chat history. Wanting history to do more
+   than reference-resolution is the signal a fact escaped into the transcript
+   and belongs in the DB instead. This is what makes sessions safe to clear.
