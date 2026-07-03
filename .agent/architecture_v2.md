@@ -99,49 +99,51 @@ any DB write.
 ## High-Level Architecture
 
 ```
-                    ┌────────────────────────────────────────────┐
-                    │  Candidate Profile (source of truth)        │
-                    │  CV ──parse once──► profile.json            │
-                    │  LLM ──slow loop──► search_queries.json     │
-                    └───────┬──────────────┬──────────────┬───────┘
-                            │              │              │
-              query set ────┘       scoring input   tailoring input
-                            ▼              ▼              ▼
-┌──────────────┐   ┌──────────────────────────────────────────────┐
-│ APScheduler   │──►│            Pipeline Stages                   │
-│ (lifespan)    │   │                                              │
-│ · scrape daily│   │  Scraper Adapters ─► Scorer ─► Tailoring     │
-│ · tailor      │   │  (MCF API /          (pure     (LLM JSON →   │
-│ · follow-up   │   │   C@G Algolia /       fn)       PDF render)  │
-│ · lifecycle   │   │   JobStreet)                                 │
-│ · digest      │   │                                              │
-│ · session-flsh│   │                                              │
-│ · apply (P2)  │   │                                              │
-└──────────────┘   └──────────┬───────────────────────────────────┘
-                              │ POST /jobs, PATCH status, artifacts
-                              ▼
-                   ┌────────────────────────────────────────────┐
-                   │  Backend API (FastAPI + repository)         │
-                   │  jobs · artifacts · FSM · dedup ·           │
-                   │  conversations · sessions · pending_pushes  │
-                   └──────┬─────────────────────┬────────────────┘
-                          │                     │
-                          ▼                     ▼
-               ┌──────────────────────┐   ┌─────────────────────────┐
-               │ Agent (LiteLLM ReAct, │   │ Telegram Bot (transport)│
-               │ POST /chat)           │◄──│ · renders pushes/PDFs    │
-               │ ConversationContext   │   │ · inline buttons         │
-               │ (build/record turns)  │   │ · /start /end commands   │
-               │ tools: query_jobs,    │──►│ · relays chat → /chat    │
-               │ tailor_resume, …      │   │ (no logic, no history)   │
-               └──────────────────────┘   └─────────────────────────┘
-                          │ Phase 2
-                          ▼
-               ┌─────────────────────────────┐
-               │ Application Worker           │
-               │ separate process, polls DB   │
-               │ Playwright + browser-use     │
-               └─────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│ Candidate Profile (source of truth)                                │
+│ CV ──parse once──► profile.json                                    │
+│ profile ──slow loop (LLM)──► search_queries.json                   │
+└───────────────────────────────┬──────────────────────────────────┘
+                                 │ read by services
+        ── TWO TRIGGERS — they never call each other ──
+                                 │
+┌───────────────┐                │                ┌───────────────────┐
+│ APScheduler   │                │                │ Telegram Bot (thin)│
+│ (lifespan)    │                │                │ free-text ─► /chat │
+│ clock; picks  │                │                │ buttons   ─► Backend│
+│ which records │                │                │ renders only,      │
+│ scrape·tailor │                │                │ no logic/history   │
+│ follow-up·    │                │                └─────────┬─────────┘
+│ lifecycle·    │                │              free-text only│ POST /chat
+│ digest·flush  │                │                           ▼
+└───────┬───────┘                │                ┌───────────────────┐
+        │ drives services        │                │ Agent — ReAct loop │
+        │ directly               │                │ reference resolution│
+        │                        │                │ ConversationContext │
+        │                        │                │ thin tool bindings  │
+        │                        │                └─────────┬─────────┘
+        │                        │       tool handlers call │ the SAME
+        │                        │       services            │
+        ▼                        ▼                           ▼
+┌──────────────────────────────────────────────────────────────────┐
+│ Shared Services — caller-agnostic; THE WORK LIVES HERE             │
+│ scrape/ingest · score · tailor · follow-up draft · query regen ·   │
+│ status transition       (only tailor / draft / regen call the LLM) │
+└──────┬───────────────────────┬───────────────────────┬────────────┘
+       │ writes                │ LLM call              │ fetch
+       ▼                       ▼                       ▼
+┌──────────────────┐  ┌──────────────────────┐  ┌──────────────────┐
+│ Backend API +    │  │ LLM (leaf dependency) │  │ Scraper adapters │
+│ repository       │  │ single, stateless     │  │ MCF · C@G ·      │
+│ jobs·artifacts·  │  │ completions           │  │ JobStreet        │
+│ FSM·dedup·       │  │ — also used directly  │  └──────────────────┘
+│ conversations·   │  │   by the Agent loop   │
+│ sessions·        │  └──────────────────────┘
+│ pending_pushes   │
+└──────────────────┘
+
+Phase 2 — Application Worker: separate process, polls DB for APPLYING
+records, drives ATS forms (Playwright + browser-use). LinkedIn excluded.
 ```
 
 ---
@@ -167,10 +169,17 @@ that needs "who is the candidate" reads from here — never from a PDF.
   then reviewed). These authored associations are what let the tailoring LLM
   emphasise a real skill on the right item without fabricating one (see § Agent
   Brain → LaTeX output path).
+- **`target_tracks`** — a flat, human-authored `list[str]` of the directions
+  the candidate is exploring (e.g. `["robotics", "mechatronics", "backend/data
+  engineering"]`). It is *intent*, not query strings: the slow loop expands it
+  into `search_queries.json`. Index-tier in the agent's profile summary (see
+  § Agent Brain). Weighting/priority per track is a noted future seam (Option B);
+  v1 is an unweighted flat list.
 - Chat-driven updates continue via the agent's `update_profile` tool
   (diff-checked, backup-on-change — unchanged from v1).
-- `search_queries.json` is derived from the profile by the LLM (see slow loop).
-  Versioned with backup-on-change, human-reviewable, vetoable.
+- `search_queries.json` is derived from the profile by the LLM (see slow loop)
+  — seeded from **skills and `target_tracks`**. Versioned with
+  backup-on-change, human-reviewable, vetoable.
 
 ### 2. Scraper Layer — adapter pattern
 
@@ -579,9 +588,14 @@ what the flush releases.
 heartbeat: it drives the pipeline (scrape → score → tailor → lifecycle →
 follow-up) on a deterministic clock, calling the LLM only at the few stages
 that need judgement (tailoring selection, follow-up drafting, query
-regeneration). The agent is the *reactive reasoning layer* the scheduler — and
-the human — call into. It wakes on `POST /chat` (human intent) or when a
-budgeted pipeline stage requests a decision; it never owns the loop.
+regeneration). The agent is the *reactive reasoning layer* the **human** calls
+into — and only the human. It wakes on `POST /chat` (a free-text user turn
+relayed by Telegram), runs the ReAct loop, and returns; it never owns the loop.
+The scheduled LLM stages above do **not** enter this loop — each is a single,
+stateless completion, so the scheduler reaches the model directly through a
+shared service, never through the agent. "Calls the LLM" is not "calls the
+agent": the model is a leaf dependency that the agent loop and the services use
+independently.
 
 Architecture unchanged: LiteLLM ReAct loop, stateless `POST /chat`, LLM
 proposes → backend validates → repository executes. New/changed tools:
@@ -595,6 +609,17 @@ proposes → backend validates → repository executes. New/changed tools:
 | `regenerate_queries` | New — rebuild `search_queries.json` from current profile |
 | `query_jobs` | Gains status-filter awareness (pipeline states) |
 | `log_job`, `update_status`, `update_profile` | Unchanged |
+
+**Every tool is a thin binding, not the work itself.** Each tool is two parts:
+a function-calling *schema* (so the LLM can propose the call) and a *handler*
+that parses the emitted arguments, calls the underlying service, and marshals
+the result back into the context. The work lives in the service — and for any
+capability the scheduler also drives (tailoring, scrape/ingest, follow-up
+drafting, query regeneration, status transitions), the scheduled job and the
+agent handler call the **same** service. The service signature carries no notion
+of its caller, so the two paths never couple. The agent layer owns the schema
+and the handler; it never owns the work, the session lifecycle (backend), or
+turn storage (repository). Per-tool I/O contracts live in `agent_v2.md`.
 
 #### Incorporated skills — the agent's domain expertise
 
