@@ -381,18 +381,19 @@ TC-ARTIFACT-05  [unit]  uut: save_debug_artifacts(tex_path, output_dir, enabled=
 ## WP7 — Entry points
 
 **Depends on:** WP4, WP6
-**Deliverables:** `select_batch(session, tailor_batch_size) -> list[Job]`,
+**Deliverables:** `select_batch(session, tailor_batch_size) -> list[Job]`
+(ordering `score DESC, posted_at DESC, id ASC` per architecture_v2.md §4),
 `run_tailor_batch(session, tailor_batch_size, tailor_service)`,
 `tailor_resume` agent tool. Batch tested as a plain function — not via the
 scheduler. Tool and batch share one service; no divergent code path.
-**Done when:** TC-ENTRY-01 through TC-ENTRY-07 pass.
+**Done when:** TC-ENTRY-01 through TC-ENTRY-08 pass.
 
 ```
 TC-ENTRY-01  [unit]  uut: select_batch(session, tailor_batch_size=3)
   given   multiple SCORED jobs with different scores
   when    select_batch is called
-  then    returns the top 3 by score DESC
-  traces  architecture_v2.md flow §4
+  then    returns the top 3 ordered by score DESC
+  traces  architecture_v2.md flow §4; §4 tailor-pass selection
 
 TC-ENTRY-02  [unit]  uut: select_batch(session, tailor_batch_size)
   given   jobs in various FSM states (SCORED, TAILORED, PENDING_APPROVAL,
@@ -432,4 +433,13 @@ TC-ENTRY-07  [int]   uut: tailor_resume tool vs run_tailor_batch — shared serv
   then    both invoke the same underlying tailor_once + render pipeline;
           no divergent code path
   traces  tailoring.md §9
+
+TC-ENTRY-08  [unit]  uut: select_batch(session, tailor_batch_size)
+  given   SCORED jobs where two share the same score, and two share both
+          the same score and the same posted_at
+  when    select_batch is called
+  then    ties break deterministically by posted_at DESC, then id ASC
+          (fresher listing first; lowest id as the final tiebreak)
+  traces  architecture_v2.md §4 tailor-pass selection
+          (ORDER BY score DESC, posted_at DESC, id ASC)
 ```
