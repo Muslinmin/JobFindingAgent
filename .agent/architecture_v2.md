@@ -449,6 +449,20 @@ real profile entry; skill terms surfaced in tailored text ⊆ that item's
 `demonstrated_skills`; no new numerals/named entities vs the source item. Guard
 violation → logged, job marked failed, no partial render.
 
+**Build plan:** `tailoring_build.md` is the build playbook for this service. It
+holds the work-package breakdown (WP0–WP7: schemas → guards → LLM call →
+orchestration → renderer → artifact registration → entry points, with the build
+order `WP0 → {WP2,WP3,WP5} → {WP4,WP6} → WP7`) and the test-case catalog that
+serves as the executable specification, where each `TC-*` case traces back to a
+`tailoring.md` section or invariant and is tagged as a unit, integration, or
+`live` test. A signature-only code skeleton (the `tailoring/` package plus
+`agent/tools/tailor_resume.py`, each definition commented with the `TC-*` ids and
+`tailoring.md` section it satisfies) is generated from that plan. This section
+records the design; the service is built by following the plan. The split is the
+same one used elsewhere: `tailoring.md` is the decision record, and
+`tailoring_build.md` is the build playbook, mirroring how § Scraper Layer pairs
+with `adapters.md`.
+
 ### 6. Telegram Bot — transport layer (thin)
 
 **Core principle:** Telegram is transport only. It moves messages between the
@@ -633,7 +647,7 @@ and renders).
 | Skill | Feeds | What it contributes |
 |---|---|---|
 | `resume-tailor` | `tailor_resume` / tailoring pass (LLM step) | JD-vs-profile selection logic: reorder experience by relevance, rewrite the summary to mirror the role, lead with the most relevant bullets, integrate JD keywords truthfully. The core of the "select & emphasise only" step. |
-| `resume-ats-optimizer` | scorer (keyword model) + gap hint + text-tier guard | Keyword taxonomy (hard / soft / industry), match-score logic, placement priority (summary → skills → bullets), ATS formatting rules. Not a separate gate: it sharpens the scorer, and its keyword model computes the gap — *in-profile keywords not yet selected* — fed into the next tailoring pass. Its keyword detector also powers the text-tier guard (surfaced skills ⊆ item's `demonstrated_skills`). See § Tailoring Service. |
+| `resume-ats-optimizer` | discovery scorer (keyword model) + text-tier guard | Keyword taxonomy (hard / soft / industry), match-score logic, placement priority (summary → skills → bullets), ATS formatting rules. It plays two roles, both real under the single-pass design. First, it sharpens the discovery scorer, which is the early score that decides whether a job is worth tailoring for at all. Second, its keyword detector powers the text-tier guard, which checks that every skill surfaced in the tailored wording is one the candidate actually listed for that experience (surfaced skills ⊆ item's `demonstrated_skills`). It is not a separate gate, and there is no post-tailoring re-score. See § Tailoring Service. |
 | `resume-section-builder` | tailoring pass (structure) | Section composition & ordering by career stage. For this user: **entry-level / technical / recent-graduate** profile — prioritise Skills + Projects, Education carries weight, 3–5 achievement bullets. Shapes the JSON structure the LLM emits. |
 | `cover-letter-generator` | `draft_cover_letter` | JD + profile → 250–400-word letter: hook, direct-match body, gap handling, call to action. Produces a distinct `cover_letter` artifact. |
 
@@ -902,7 +916,7 @@ Phase 2 replaces step 6's manual apply:
 | 2 | Careers@Gov adapter (Algolia, referer headers — see `careers_gov_adapter.py`) | 0.6.0 |
 | 3 | FSM migration + artifacts table | 0.6.0 |
 | 4 | Profile-derived keywords; CV → `profile.json` parse (superset; parse proposes `demonstrated_skills` per item, human-reviewed) | 0.6.0 |
-| 5 | Tailoring service (LLM JSON + PDF renderer, TDD) | 0.6.x |
+| 5 | Tailoring service (LLM JSON + PDF renderer, TDD) — build plan in `tailoring_build.md` (WP0–WP7, tests-as-spec) | 0.6.x |
 | 6 | Telegram approval flow (inline keyboards, PDF push) | 0.6.x |
 | 7 | JobStreet adapter (HTML parser or internal JSON endpoints, fixture-based tests) | 0.7.0 |
 | 8 | Embedding-based scoring (injected embedder) | 0.7.x |
