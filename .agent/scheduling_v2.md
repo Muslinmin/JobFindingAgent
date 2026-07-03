@@ -430,3 +430,249 @@ incrementally in dependency order.
    scheduler. The scheduler wiring is tested once in WP-S1.
 5. Failure in one job or one record within a batch is caught, logged, and
    skipped — never propagated to the scheduler loop.
+
+---
+
+## Skeleton — Files & Functions
+
+Layout follows the modular per-concern convention. All jobs live under a
+`scheduler/` package; each file maps to one work package.
+
+**Dependency ownership.** The scheduler owns none of the clients it calls. The
+`TelegramClient` is owned by the Telegram layer (`telegram/client.py`); the
+backend HTTP client and the LiteLLM client are owned by their respective layers.
+All are constructed once in the FastAPI lifespan hook (WP-S1 / WP-T1) and injected
+into each job. The scheduler depends on these interfaces; it never constructs them.
+
+```
+scheduler/
+  __init__.py
+  bootstrap.py        # WP-S1: lifespan registration, cron triggers, DI wiring
+  jobs/
+    __init__.py
+    scrape.py         # WP-S2: scrape + inline score
+    lifecycle.py      # WP-S3: three time rules
+    follow_up.py      # WP-S4: deterministic check + LLM draft
+    tailor.py         # WP-S5: top-N select + tailor + push
+    query_regen.py    # WP-S6: profile -> search_queries.json
+    digest.py         # WP-S7: weekly pipeline summary
+```
+
+Injected interfaces, by owning layer (none constructed by the scheduler):
+
+| Interface | Owned by | Used by jobs |
+|---|---|---|
+| `TelegramClient` | `telegram/client.py` | lifecycle, follow_up, tailor, digest |
+| `BackendClient` (httpx wrapper) | backend layer | all jobs |
+| `LLMClient` (LiteLLM) | agent/LLM layer | follow_up, tailor (via tailoring service), query_regen |
+| scorer `score(jd_text, profile) -> int` | scoring layer | scrape |
+| tailoring service `tailor(jd, profile)` | tailoring layer | tailor |
+
+`TelegramClient` send primitives used (chat_id is baked in at construction —
+never passed by the scheduler):
+
+| Job | Method |
+|---|---|
+| lifecycle (ghost notice) | `send_message(text)` |
+| follow_up | `send_message_with_keyboard(text, keyboard)` |
+| tailor | `send_document(text, pdf_bytes)` + `send_message_with_keyboard(...)` |
+| digest | `send_message(text)` |
+
+### `scheduler/bootstrap.py` — WP-S1
+
+```python
+def register_jobs(
+    scheduler: AsyncIOScheduler,
+    deps: SchedulerDeps,
+    settings: Settings,
+) -> None:
+    """Register all six jobs on the scheduler with cron triggers from settings.
+    Each job is bound to its injected dependencies via functools.partial."""
+    ...
+
+async def start_scheduler(scheduler: AsyncIOScheduler) -> None:
+    """Start the scheduler. Called from the FastAPI lifespan startup phase
+    alongside start_bot()."""
+    ...
+
+async def stop_scheduler(scheduler: AsyncIOScheduler) -> None:
+    """Graceful shutdown, called on lifespan teardown."""
+    ...
+```
+
+`SchedulerDeps` is the injection bundle — a frozen dataclass holding the
+`TelegramClient`, `BackendClient`, `LLMClient`, scorer, and tailoring service,
+constructed once in the lifespan hook and shared across all jobs.
+
+### `scheduler/jobs/scrape.py` — WP-S2
+
+```python
+async def run_scrape(
+    adapters: list[JobSource],
+    backend: BackendClient,
+    score: Scorer,                 # score(jd_text, profile) -> int
+    settings: Settings,
+) -> None:
+    """Load search_queries.json, fan out across adapters, POST each JobCreate,
+    then score each new DISCOVERED record -> SCORED | REJECTED.
+    Missing queries file: log warning and return. Adapter exception: log and
+    continue with the remaining adapters."""
+    ...
+
+def _load_queries(path: Path) -> list[str] | None:
+    """Read search_queries.json. Returns None (logged) if missing."""
+    ...
+
+async def _ingest_and_score(
+    jobs: list[JobCreate], backend: BackendClient, score: Scorer, settings: Settings
+) -> None:
+    """POST each job (backend dedups), score new records, transition status."""
+    ...
+```
+
+### `scheduler/jobs/lifecycle.py` — WP-S3
+
+```python
+async def run_lifecycle(
+    backend: BackendClient,
+    telegram: TelegramClient,
+    settings: Settings,
+) -> None:
+    """Apply three deterministic time rules on status_changed_at:
+      PENDING_APPROVAL > pending_expiry_days -> EXPIRED   (silent)
+      SCORED           > stale_after_days     -> REJECTED  (silent)
+      APPLIED/INTERVIEWING > ghost_after_days -> GHOSTED   (+ telegram notice)
+    Per-record PATCH failure is caught and logged; batch continues."""
+    ...
+
+async def _expire_pending(backend: BackendClient, settings: Settings) -> int: ...
+
+async def _reject_stale(backend: BackendClient, settings: Settings) -> int: ...
+
+async def _ghost_silent_applicants(
+    backend: BackendClient, telegram: TelegramClient, settings: Settings
+) -> int:
+    """Transition + send one ghost notice per record:
+    'No response from {company} ({role}) — marked as ghosted.'"""
+    ...
+```
+
+### `scheduler/jobs/follow_up.py` — WP-S4
+
+```python
+async def run_follow_up(
+    backend: BackendClient,
+    llm: LLMClient,
+    telegram: TelegramClient,
+    settings: Settings,
+) -> None:
+    """Deterministic check first (zero tokens): APPLIED, status_changed_at past
+    follow_up_after_days, follow_up_count = 0 (first nudge) or = 1 past interval
+    (second nudge). For each match: draft via LLM, push with [Sent it] [Skip].
+    LLM is called only for qualifying records."""
+    ...
+
+def _due_for_followup(jobs: list[Job], settings: Settings) -> list[Job]:
+    """Pure predicate filter — status, age, follow_up_count. No I/O."""
+    ...
+
+async def _draft_and_push(
+    job: Job, llm: LLMClient, telegram: TelegramClient
+) -> None:
+    """llm.draft_followup(role, company, applied_date) -> text, then
+    telegram.send_message_with_keyboard(text, [[Sent it] [Skip]])."""
+    ...
+```
+
+### `scheduler/jobs/tailor.py` — WP-S5
+
+```python
+async def run_tailor(
+    backend: BackendClient,
+    tailoring: TailoringService,
+    telegram: TelegramClient,
+    settings: Settings,
+) -> None:
+    """Select top tailor_batch_size SCORED (score DESC, posted_at DESC, id ASC),
+    tailor each -> PDF -> register artifact -> PENDING_APPROVAL -> push with
+    PDF + [Mark Applied] [Skip]. Guard violation or exception on one record:
+    log, mark that record failed, continue the batch."""
+    ...
+
+async def _tailor_one(
+    job: Job, tailoring: TailoringService, backend: BackendClient, telegram: TelegramClient
+) -> None:
+    """tailor -> validate (schema + guards) -> render PDF ->
+    POST /jobs/{id}/artifacts -> PATCH status PENDING_APPROVAL ->
+    send_document + send_message_with_keyboard. Guard breach raises; caught by caller."""
+    ...
+```
+
+### `scheduler/jobs/query_regen.py` — WP-S6
+
+```python
+async def run_query_regen(
+    llm: LLMClient,
+    settings: Settings,
+    profile_path: Path,
+    queries_path: Path,
+) -> None:
+    """Read profile.json, one LLM call -> query list, write search_queries.json
+    with backup-on-change. Identical content: no write (idempotent).
+    Missing profile.json: log warning and return.
+    Also the callable backing the agent's regenerate_queries tool."""
+    ...
+
+def _write_with_backup(path: Path, content: str) -> bool:
+    """Write only if content differs from existing; back up the old file first.
+    Returns True if written, False if unchanged."""
+    ...
+```
+
+### `scheduler/jobs/digest.py` — WP-S7
+
+```python
+@dataclass(frozen=True)
+class DigestCounts:
+    """Pipeline state snapshot for the weekly digest."""
+    scored: int
+    tailored: int
+    pending_approval: int
+    applied: int
+    interviewing: int
+    offer: int
+    follow_ups_due: int
+    ghosted_last_7d: int
+    expired_last_7d: int
+
+async def collect_counts(backend: BackendClient, settings: Settings) -> DigestCounts:
+    """Pull active-state counts via GET /jobs?status=...; compute follow_ups_due
+    with the same predicate as the follow-up job; count GHOSTED/EXPIRED in last 7d."""
+    ...
+
+def format_digest(counts: DigestCounts, today: date) -> str:
+    """Pure: counts + date -> Telegram message body. Zero LLM, zero I/O."""
+    ...
+
+async def run_digest(
+    backend: BackendClient,
+    telegram: TelegramClient,
+    settings: Settings,
+) -> None:
+    """collect_counts -> format_digest -> telegram.send_message.
+    Catches and logs its own exceptions; never propagates to the scheduler loop."""
+    ...
+```
+
+**Test files** mirror the package, one per job module:
+
+```
+tests/scheduler/
+  test_bootstrap.py     # WP-S1: scheduler start/stop, cron registration
+  test_scrape.py        # WP-S2: ingest, dedup, score transitions, adapter isolation
+  test_lifecycle.py     # WP-S3: three rules, boundaries, ghost-notice-only
+  test_follow_up.py     # WP-S4: predicate filter, LLM-only-on-match, ghost clock untouched
+  test_tailor.py        # WP-S5: batch cap, ordering, guard-skip, batch isolation
+  test_query_regen.py   # WP-S6: write, backup-on-change, idempotent no-write
+  test_digest.py        # WP-S7: format assertion (pure), template path no-LLM
+```
