@@ -465,7 +465,7 @@ Injected interfaces, by owning layer (none constructed by the scheduler):
 | `TelegramClient` | `telegram/client.py` | lifecycle, follow_up, tailor, digest |
 | `BackendClient` (httpx wrapper) | backend layer | all jobs |
 | `LLMClient` (LiteLLM) | agent/LLM layer | follow_up, tailor (via tailoring service), query_regen |
-| scorer `score(jd_text, profile) -> int` | scoring layer | scrape |
+| `Scorer` Protocol (`async score(jd_text, candidate) -> int`, `name`) | scoring layer | scrape |
 | tailoring service `tailor(jd, profile)` | tailoring layer | tailor |
 
 `TelegramClient` send primitives used (chat_id is baked in at construction —
@@ -510,7 +510,7 @@ constructed once in the lifespan hook and shared across all jobs.
 async def run_scrape(
     adapters: list[JobSource],
     backend: BackendClient,
-    score: Scorer,                 # score(jd_text, profile) -> int
+    scorer: Scorer,                # Protocol: async score(jd_text, candidate) -> int; name
     settings: Settings,
 ) -> None:
     """Load search_queries.json, fan out across adapters, POST each JobCreate,
@@ -524,9 +524,13 @@ def _load_queries(path: Path) -> list[str] | None:
     ...
 
 async def _ingest_and_score(
-    jobs: list[JobCreate], backend: BackendClient, score: Scorer, settings: Settings
+    jobs: list[JobCreate], backend: BackendClient, scorer: Scorer, settings: Settings
 ) -> None:
-    """POST each job (backend dedups), score new records, transition status."""
+    """POST each job (backend dedups). For each new DISCOVERED record:
+      score = await scorer.score(jd_text, profile)
+      status = SCORED if score >= settings.score_threshold else REJECTED
+    The gate lives here, not in the scorer — the scorer only returns the int.
+    scorer.name is stamped onto the record for the per-cohort score audit trail."""
     ...
 ```
 
