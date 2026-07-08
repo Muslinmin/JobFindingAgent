@@ -9,7 +9,7 @@ deterministic clock, calling the LLM only at the stages that genuinely need
 judgement. It is **not** the agent — the agent is reactive (wakes on demand via
 `POST /chat`). The scheduler is proactive (wakes on a clock).
 
-All writes go through the backend API. The scheduler never writes to the DB directly.
+All writes go through the backend service layer, which instance is injected so scheduler can call the functions without directly interacting with backend. The scheduler never writes to the DB directly.
 
 ---
 
@@ -74,10 +74,8 @@ No scheduler fixtures in tests. Each job is `async def run_<job>(deps...) -> Non
 Tests call it directly with mocked dependencies. The scheduler wiring (APScheduler
 registration, cron triggers) is tested only in the bootstrap integration test.
 
-**5. LLM is only touched by three jobs.**
-`tailor`, `follow_up` (drafting step only), and `query_regen`. Scrape, scoring,
-and lifecycle are zero-token by design. This is the discipline that makes the
-pipeline cheap, deterministic, and testable at low cost.
+**5. LLM is only touched by three jobs. (+1 embedding model for scoring)**
+`tailor`, `follow_up` (drafting step only), and `query_regen`. Scraper uses an embedding model. 
 
 **6. All time comparisons key off `status_changed_at`, not `updated_at`.**
 `status_changed_at` is stamped on every FSM transition. Follow-up and ghost clocks
@@ -148,39 +146,95 @@ immediately scores each new `DISCOVERED` record and transitions it to `SCORED` o
 record sitting unscored between runs. `DISCOVERED` is a transient state — a job
 should never be in `DISCOVERED` at the start of a new scrape cycle.
 
-**Implementation notes:**
-- Load `search_queries.json` at job start; if missing, log a warning and skip the
-  run (query_regen will fix this).
-- For each query, call each adapter's `.fetch(query)` concurrently (asyncio
-  gather) with a configurable `delay_s` between adapter calls for politeness.
-- Each adapter wraps its own exception: failure returns `[]` and logs; never
-  raises to the job runner.
-- For each returned `JobCreate`, call `POST /jobs`. The backend handles dedup
-  (fingerprint match → upsert `seen_count`/`last_seen_at`, no new record).
-- For each newly created record (status = `DISCOVERED`), call the scorer:
-  `score(jd_text, profile) -> int`. Score ≥ `score_threshold` →
-  `PATCH /jobs/{id}/status` to `SCORED`; below → `REJECTED`.
-- Inject adapters, HTTP client, scorer function, and settings — never
-  instantiated inside the job function.
+**Pipeline design notes:**
+`run_scrape` is a single async function that fans out queries across adapters and ingests results **in-process through the consolidated service layer** — it does **not** make HTTP calls to the backend. The scheduler calls the service layer directly, and `run_scrape` is scheduler-triggered, so calling `POST /jobs` over HTTP would be a self-HTTP call against our own process. Instead, `run_scrape` calls `service.ingest_job()` directly. Dedup is unchanged — it still happens inside `ingest_job` (fingerprint → repository upsert).
+
+
+The `ingest_job` service function is injected as a callable, not imported directly. This keeps the pipeline decoupled from the service module and trivially mockable in tests (no HTTP client, no service object graph).
+
+```python
+# IngestJobFn: Callable[[JobCreate], Awaitable[Job]] — this is service.ingest_job
+
+async def run_scrape(
+    queries: list[str],
+    adapters: list[JobSource],
+    ingest_job: IngestJobFn,     # injected service.ingest_job — in-process, no HTTP
+    delay_s: float = 1.0,
+) -> None: ...
+```
+
+```python
+scheduler.add_job(
+    run_scrape, "interval", hours=24,
+    kwargs={"queries": ..., "adapters": ..., "ingest_job": service.ingest_job},
+)
+```
+
+#### Implementation tasks
+
+1. For each query × adapter: call `adapter.fetch(query)`, then `await ingest_job(job_create)` for each returned `JobCreate`
+2. Wrap each `adapter.fetch()` call in try/except — one adapter failure must not abort the others
+3. Wrap each `ingest_job()` call in try/except — one ingest failure must not abort remaining ingests
+4. Apply configurable `delay_s` between adapter calls
+5. Log a summary per adapter per query: adapter name, query, number of jobs fetched, number of ingests succeeded
+
+
 
 **Tests:**
-- Mock adapters returning fixture `JobCreate` lists; assert each result is POSTed
-  exactly once.
-- Assert a fingerprint-matched record does not result in a second `POST /jobs`
-  creating a new row (mock the backend returning the upsert response).
-- Assert scorer is called for each new `DISCOVERED` record.
-- Assert a score ≥ threshold transitions to `SCORED`; below threshold to
-  `REJECTED`.
-- Assert a single adapter exception does not abort the others (remaining adapters
-  still called).
-- Assert missing `search_queries.json` logs a warning and returns without
-  raising.
-
 **Definition of done:**
 - Job callable as a plain function with injected dependencies.
 - All failure paths (missing queries file, adapter exception, score below
   threshold) covered by unit tests.
 - Scheduler registers it for `scrape_hour` daily.
+
+
+```
+test_pipeline_fans_out_across_adapters
+  Two mock adapters (mock_adapter_a, mock_adapter_b) each returning 2 JobCreate instances
+  One query string: ["engineer"]
+  Mock ingest_job callable (AsyncMock) capturing calls
+  Call await run_scrape(queries=["engineer"], adapters=[mock_adapter_a, mock_adapter_b], ingest_job=mock_ingest)
+  Assert: mock_adapter_a.fetch called once with "engineer"
+  Assert: mock_adapter_b.fetch called once with "engineer"
+  Assert: mock_ingest called 4 times total (2 adapters × 2 jobs each)
+
+test_pipeline_fans_out_across_queries
+  One mock adapter returning 2 JobCreate instances per call
+  Two query strings: ["engineer", "analyst"]
+  Assert: adapter.fetch called twice (once per query)
+  Assert: mock_ingest called 4 times total
+
+test_pipeline_one_adapter_failure_does_not_abort_others
+  mock_adapter_a.fetch raises an exception
+  mock_adapter_b.fetch returns 2 JobCreate instances
+  Call run_scrape with both adapters
+  Assert: mock_ingest called 2 times (mock_adapter_b's jobs ingested)
+  Assert: no exception propagates out of run_scrape()
+  Assert: logger.warning called at least once
+
+test_pipeline_ingest_failure_does_not_abort_pipeline
+  One mock adapter returning 3 JobCreate instances
+  mock_ingest raises an exception on the first call, succeeds on subsequent calls
+  Assert: no exception propagates out of run_scrape()
+  Assert: remaining ingests still attempted (mock_ingest called 3 times total)
+  Assert: logger.warning called at least once
+
+test_pipeline_delay_between_requests
+  Mock asyncio.sleep
+  One adapter, two queries
+  Assert: asyncio.sleep called with delay_s value between adapter calls
+
+test_pipeline_empty_adapter_result
+  Mock adapter returns []
+  Assert: mock_ingest never called
+  Assert: no exception raised
+  Assert: no warning logged
+
+test_pipeline_ingests_correct_jobcreate
+  Mock adapter returns one JobCreate with known field values
+  Assert: mock_ingest called once with that exact JobCreate instance
+  (identity/equality check on the argument — no serialization involved)
+```
 
 ---
 

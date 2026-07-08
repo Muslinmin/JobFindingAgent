@@ -15,7 +15,6 @@ The scraper layer has four work packages, executed in dependency order:
 | WP-S1 | Careers@Gov adapter — finalise and test | Code exists, needs alignment + tests |
 | WP-S2 | MCF adapter — implement from scratch | Recon done, ready to build |
 | WP-S3 | JobStreet adapter — recon then implement | Recon incomplete, do not build yet |
-| WP-S4 | Pipeline runner — fan-out + in-process ingest | Depends on WP-S1 and WP-S2 |
 
 
 ---
@@ -23,8 +22,8 @@ The scraper layer has four work packages, executed in dependency order:
 ## Project invariants (non-negotiable for all WPs)
 
 1. **No reasoning in adapters.** Query, parse, normalise only. No LLM calls, no scoring, no relevance decisions.
-2. **No DB access, no self-HTTP.** Adapters return `list[JobCreate]`; the pipeline hands each to the consolidated service layer in-process via injected `ingest_job` (never an HTTP call to `POST /jobs` — that route exists for out-of-process callers only). Dedup happens inside `ingest_job` (fingerprint → repository upsert).
-3. **Fail soft.** Any error → `logger.warning` + return `[]`. An adapter must never crash the pipeline.
+2. **No DB access, no self-HTTP.** Adapters return `list[JobCreate]`; `ingest_job` (never an HTTP call to `POST /jobs` — that route exists for out-of-process callers only). Dedup happens inside `ingest_job` (fingerprint → repository upsert).
+3. **Fail soft.** Any error → `logger.warning` + return `[]`. An adapter must never crash
 4. **Injectable HTTP client.** Constructor accepts `client: httpx.AsyncClient | None`. No real network in tests except `@pytest.mark.live`.
 5. **Secrets in settings.** All API keys, app IDs, index names, delays, page sizes go in pydantic-settings (`.env`). Never hardcoded.
 6. **`JobCreate` is the return type of `fetch()`.** Not `dict[str, Any]`. Pydantic validates at the boundary.
@@ -141,8 +140,7 @@ test_careers_gov_live_smoke
    - Strip HTML from `description` (use `html.parser` or `BeautifulSoup` — pick one and pin it)
    - Set `posted_at` as a top-level `JobCreate` field (not in `metadata`)
    - Put salary range, `positionLevels`, `employmentTypes`, UEN into `metadata`
-4. Register `McfSource` in the pipeline adapter list (WP-S4)
-5. Write tests (see specifications below)
+4. Write tests (see specifications below)
 
 ### Test specifications
 
@@ -274,105 +272,6 @@ test_jobstreet_live_smoke
 
 ---
 
-## WP-S4 — Pipeline runner
-
-### Design
-
-`run_scrape` is a single async function that fans out queries across adapters and ingests results **in-process through the consolidated service layer** — it does **not** make HTTP calls to the backend. The scheduler calls the service layer directly, and `run_scrape` is scheduler-triggered, so calling `POST /jobs` over HTTP would be a self-HTTP call against our own process. Instead, `run_scrape` calls `service.ingest_job()` directly. Dedup is unchanged — it still happens inside `ingest_job` (fingerprint → repository upsert).
-
-APScheduler calls `run_scrape` on a 24-hour tick. The scheduler holds only the cron config — all logic lives in `run_scrape` so it is testable without APScheduler.
-
-The `ingest_job` service function is injected as a callable, not imported directly. This keeps the pipeline decoupled from the service module and trivially mockable in tests (no HTTP client, no service object graph).
-
-```python
-# IngestJobFn: Callable[[JobCreate], Awaitable[Job]] — this is service.ingest_job
-
-async def run_scrape(
-    queries: list[str],
-    adapters: list[JobSource],
-    ingest_job: IngestJobFn,     # injected service.ingest_job — in-process, no HTTP
-    delay_s: float = 1.0,
-) -> None: ...
-```
-
-The **scheduling layer** (a separate layer, not part of the scraper layer) imports `run_scrape` and registers it on a 24-hour tick, alongside its other scheduled jobs. The scraper layer's only responsibility is to expose `run_scrape` as a clean, importable async function. For reference, the registration the scheduling layer performs looks like this:
-
-```python
-# This lives in the SCHEDULING layer, shown here only for context.
-scheduler.add_job(
-    run_scrape, "interval", hours=24,
-    kwargs={"queries": ..., "adapters": ..., "ingest_job": service.ingest_job},
-)
-```
-
-File (scraper layer): `src/scraper/pipeline.py` — contains `run_scrape` and nothing about APScheduler.
-
-### Implementation tasks
-
-1. For each query × adapter: call `adapter.fetch(query)`, then `await ingest_job(job_create)` for each returned `JobCreate`
-2. Wrap each `adapter.fetch()` call in try/except — one adapter failure must not abort the others
-3. Wrap each `ingest_job()` call in try/except — one ingest failure must not abort remaining ingests
-4. Apply configurable `delay_s` between adapter calls
-5. Log a summary per adapter per query: adapter name, query, number of jobs fetched, number of ingests succeeded
-
-### Test specifications
-
-File: `tests/unit/test_pipeline.py`
-
-```
-test_pipeline_fans_out_across_adapters
-  Two mock adapters (mock_adapter_a, mock_adapter_b) each returning 2 JobCreate instances
-  One query string: ["engineer"]
-  Mock ingest_job callable (AsyncMock) capturing calls
-  Call await run_scrape(queries=["engineer"], adapters=[mock_adapter_a, mock_adapter_b], ingest_job=mock_ingest)
-  Assert: mock_adapter_a.fetch called once with "engineer"
-  Assert: mock_adapter_b.fetch called once with "engineer"
-  Assert: mock_ingest called 4 times total (2 adapters × 2 jobs each)
-
-test_pipeline_fans_out_across_queries
-  One mock adapter returning 2 JobCreate instances per call
-  Two query strings: ["engineer", "analyst"]
-  Assert: adapter.fetch called twice (once per query)
-  Assert: mock_ingest called 4 times total
-
-test_pipeline_one_adapter_failure_does_not_abort_others
-  mock_adapter_a.fetch raises an exception
-  mock_adapter_b.fetch returns 2 JobCreate instances
-  Call run_scrape with both adapters
-  Assert: mock_ingest called 2 times (mock_adapter_b's jobs ingested)
-  Assert: no exception propagates out of run_scrape()
-  Assert: logger.warning called at least once
-
-test_pipeline_ingest_failure_does_not_abort_pipeline
-  One mock adapter returning 3 JobCreate instances
-  mock_ingest raises an exception on the first call, succeeds on subsequent calls
-  Assert: no exception propagates out of run_scrape()
-  Assert: remaining ingests still attempted (mock_ingest called 3 times total)
-  Assert: logger.warning called at least once
-
-test_pipeline_delay_between_requests
-  Mock asyncio.sleep
-  One adapter, two queries
-  Assert: asyncio.sleep called with delay_s value between adapter calls
-
-test_pipeline_empty_adapter_result
-  Mock adapter returns []
-  Assert: mock_ingest never called
-  Assert: no exception raised
-  Assert: no warning logged
-
-test_pipeline_ingests_correct_jobcreate
-  Mock adapter returns one JobCreate with known field values
-  Assert: mock_ingest called once with that exact JobCreate instance
-  (identity/equality check on the argument — no serialization involved)
-```
-
-### Definition of done
-
-- All unit tests pass
-- `run_scrape` is exposed as a plain importable async function with no APScheduler knowledge
-- Registering `run_scrape` on a 24-hour tick is owned by the **scheduling layer**, not the scraper layer — the scheduling layer imports `run_scrape` and registers it alongside its other scheduled jobs (lifecycle, follow-up, tailor, query regeneration, digest). No `scheduler.py` lives in the scraper layer.
-- `architecture_v2.md` scraper section updated to reflect the pipeline runner
 
 ---
 
@@ -384,14 +283,12 @@ src/
     careers_gov_adapter.py   # WP-S1
     mcf_adapter.py           # WP-S2
     jobstreet_adapter.py     # WP-S3
-    pipeline.py              # WP-S4  (run_scrape — exposed for the scheduling layer to register)
 
 tests/
   unit/
     test_careers_gov_adapter.py
     test_mcf_adapter.py
     test_jobstreet_adapter.py
-    test_pipeline.py
   fixtures/
     careers_gov_response.json   # WP-S1 — capture before writing tests
     mcf_response.json           # WP-S2 — capture during recon
@@ -404,5 +301,3 @@ tests/
 
 1. Capture `careers_gov_response.json` fixture → WP-S1 tests → WP-S1 fixes
 2. Complete MCF recon → capture `mcf_response.json` → WP-S2 tests → WP-S2 implementation
-3. WP-S4 (pipeline runner) — can start once WP-S1 and WP-S2 are done
-4. WP-S3 recon → outcome determines whether to implement or defer
