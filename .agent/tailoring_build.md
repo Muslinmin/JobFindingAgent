@@ -15,14 +15,15 @@
 ## Build order
 
 ```
-WP0 → {WP2, WP3, WP5}
-{WP2, WP3} → WP4
-WP5 → WP6
-{WP4, WP6} → WP7
+WP0 → {WP2, WP3, WP5} → WP4
 ```
 
-WP2, WP3, and WP5 are a parallel front — all unblock from WP0 and can be
-built simultaneously. They converge at WP4 and WP6, which converge at WP7.
+WP2, WP3, and WP5 are a parallel front: all three unblock from WP0 and can be
+built at the same time. They converge at WP4, which is the layer's single public
+entry point. There is no WP6 or WP7 in this layer any more; the responsibilities
+that used to live there — registering the artifact, advancing the job's state,
+and selecting which jobs to tailor — now belong to the caller, and they are
+recorded in the "Caller contract" section at the end of this file.
 
 ---
 
@@ -104,26 +105,30 @@ TC-SCHEMA-10  [unit]  uut: Profile.model_validate(json.load("profile_template.js
 ## WP2 — Truthfulness guards
 
 **Depends on:** WP0
-**Deliverables:** `check_skill_subset(tailored_item, source_item, skill_detector)`,
-`check_no_new_specifics(tailored_text, source_text)` — both pure functions,
-no I/O.
+**Deliverables:** `check_skill_subset(tailored_item, source_item)`,
+`check_no_new_specifics(tailored_text, source_text)` — both deterministic, no I/O.
+The skill detector (the `resume-ats-optimizer` keyword model) is **internal** to
+this module, not a caller argument. There is one construction point for it
+(`_get_skill_detector()`), which tests patch to substitute a fake detector.
 **Done when:** TC-GUARD-01 through TC-GUARD-08 pass.
 
 ```
-TC-GUARD-01  [unit]  uut: check_skill_subset(tailored_item, source_item, skill_detector)
-  given   source item with demonstrated_skills=['python', 'fastapi']
-  when    tailored bullet surfaces 'python'
-  then    passes — skill is authorised for this item
+TC-GUARD-01  [unit]  uut: check_skill_subset(tailored_item, source_item)
+  given   source item with demonstrated_skills=['python', 'fastapi']; the
+          internal detector is patched to report {'python'} for the text
+  when    check_skill_subset is called
+  then    passes — the detected skill is authorised for this item
   traces  tailoring.md §3; §4; invariant 2
 
-TC-GUARD-02  [unit]  uut: check_skill_subset(tailored_item, source_item, skill_detector)
-  given   source item with demonstrated_skills=['python', 'fastapi']
-  when    tailored bullet surfaces 'leadership' (absent from demonstrated_skills)
-  then    flagged — unauthorised skill attribution
+TC-GUARD-02  [unit]  uut: check_skill_subset(tailored_item, source_item)
+  given   source item with demonstrated_skills=['python', 'fastapi']; the
+          internal detector is patched to report {'leadership'} for the text
+  when    check_skill_subset is called
+  then    flagged — 'leadership' is an unauthorised skill attribution
   traces  tailoring.md §3; §4; invariant 2
 
-TC-GUARD-03  [unit]  uut: check_skill_subset(tailored_item, source_item, skill_detector)
-  given   tailored rewrite contains no detectable skill terms
+TC-GUARD-03  [unit]  uut: check_skill_subset(tailored_item, source_item)
+  given   the internal detector is patched to report no skills for the text
   when    check_skill_subset is called
   then    passes — nothing to check
   traces  tailoring.md §4
@@ -137,13 +142,13 @@ TC-GUARD-04  [unit]  uut: check_no_new_specifics(tailored_text, source_text)
 TC-GUARD-05  [unit]  uut: check_no_new_specifics(tailored_text, source_text)
   given   source = "Built backend services"
   when    tailored = "Led a team of 5 to build backend services"
-  then    flagged — "5" is a new numeral absent from source
+  then    flagged — "5" is a new numeral absent from source. And "team" is not mentioned in backend services. - fabrication of fact
   traces  tailoring.md §4; invariant 3
 
 TC-GUARD-06  [unit]  uut: check_no_new_specifics(tailored_text, source_text)
   given   source contains "5 engineers"
   when    tailored preserves "5"
-  then    passes — numeral present in source
+  then    fails — engineers are removed from the phrasing, completely alters the meaning
   traces  tailoring.md §4; invariant 3
 
 TC-GUARD-07  [unit]  uut: check_no_new_specifics(tailored_text, source_text)
@@ -152,11 +157,13 @@ TC-GUARD-07  [unit]  uut: check_no_new_specifics(tailored_text, source_text)
   then    flagged — new named entity absent from source
   traces  tailoring.md §4; invariant 3
 
-TC-GUARD-08  [int]   uut: check_skill_subset wired with resume-ats-optimizer keyword detector
-  given   a text sample and a ProfileItem with known demonstrated_skills
-  when    the keyword detector identifies skill IDs present in the text
-  then    correctly surfaces present skill IDs and flags those absent from
+TC-GUARD-08  [int]   uut: check_skill_subset with the real internal detector (not patched)
+  given   the default detector from `_get_skill_detector()` — the real
+          resume-ats-optimizer keyword model — and a ProfileItem with known
           demonstrated_skills
+  when    check_skill_subset runs against a text sample
+  then    the real detector surfaces the skill IDs present in the text, and the
+          guard flags any that are absent from demonstrated_skills
   traces  tailoring.md §7 (resume-ats-optimizer keyword model integration)
 ```
 
@@ -225,44 +232,83 @@ TC-PROMPT-08  [int]   uut: call_llm_tailor with a full Profile + JD fixture
 
 ---
 
-## WP4 — Tailoring orchestration
+## WP4 — Public entry point: `tailor()`
 
-**Depends on:** WP2, WP3
-**Deliverables:** `tailor_once(jd, profile, llm, guard_checker) -> TailoredSelection | TailoringFailure`.
-Single-pass: call LLM → validate schema → run guards → return. Guard
-violation logs at CRITICAL and returns a failure; no retry, no partial output.
-**Done when:** TC-ORCH-01 through TC-ORCH-05 pass.
+This is the layer's single public function and its only supported entry point.
+It takes a job description and a profile, runs the full single pass (LLM call →
+schema validation → truthfulness guards → render to a PDF on disk), and returns
+an `ArtifactResult` that names the file. On any failure it raises
+`TailoringError`; it never returns a partial result and it never retries. It
+performs no database read or write of any kind — registering the artifact and
+advancing the job's state are the caller's job (see "Caller contract" below).
+
+**Depends on:** WP2, WP3, WP5
+**Deliverables:** `tailor(job_description, profile, *, llm, template_path,
+output_dir, save_debug_artifacts=False) -> ArtifactResult`;
+the `ArtifactResult` result type (the PDF path and its kind); the
+`TailoringError` exception (carrying a reason and, for guard failures, the list
+of violations); and the `save_debug_artifact(...)` helper. The skill detector is
+internal to the guard module (WP2) and is not a parameter here. The layer writes
+the PDF to disk (option 1 boundary) and returns its path; it does not hold the
+bytes in memory for the caller.
+**Done when:** TC-ORCH-01 through TC-ORCH-08 pass.
 
 ```
-TC-ORCH-01  [unit]  uut: tailor_once(jd, profile, llm=mock_valid, guards=mock_pass)
-  given   mock LLM returns valid selection; both guards pass
-  when    tailor_once is invoked
-  then    returns a TailoredSelection
-  traces  tailoring.md §6
+TC-ORCH-01  [unit]  uut: tailor(jd, profile, llm=mock_valid)
+  given   mock LLM returns a valid selection whose text trips no guard
+  when    tailor is invoked
+  then    returns an ArtifactResult naming  a PDF file that exists on disk (a directory)
+  traces  tailoring.md §5-boundary; §6
 
-TC-ORCH-02  [unit]  uut: tailor_once(jd, profile, llm=mock_malformed, guards=mock_pass)
+TC-ORCH-02  [unit]  uut: tailor(jd, profile, llm=mock_malformed)
   given   mock LLM returns malformed JSON
-  when    tailor_once is invoked
-  then    logs error, returns TailoringFailure; guard check is never attempted
+  when    tailor is invoked
+  then    raises TailoringError with reason 'schema_invalid'; the render step
+          is never reached; no file is written
   traces  tailoring.md §6; invariant 7
 
-TC-ORCH-03  [unit]  uut: tailor_once(jd, profile, llm=mock_valid, guards=mock_skill_fail)
-  given   mock LLM returns valid schema; skill-subset guard fails
-  when    tailor_once is invoked
-  then    logs error at CRITICAL, returns TailoringFailure cleanly
+TC-ORCH-03  [unit]  uut: tailor(jd, profile, llm=mock_unauthorized_skill)
+  given   mock LLM returns a valid schema, but a tailored bullet surfaces a
+          skill absent from that item's demonstrated_skills (trips the real
+          skill-subset guard)
+  when    tailor is invoked
+  then    raises TailoringError with reason 'guard_violation'; the failure is
+          logged at CRITICAL; no render happens and no file is written
   traces  tailoring.md §4; §6; invariant 7
 
-TC-ORCH-04  [unit]  uut: tailor_once(jd, profile, llm=mock_valid, guards=mock_specifics_fail)
-  given   mock LLM returns valid schema; no-new-specifics guard fails
-  when    tailor_once is invoked
-  then    logs error at CRITICAL, returns TailoringFailure cleanly
+TC-ORCH-04  [unit]  uut: tailor(jd, profile, llm=mock_new_specific)
+  given   mock LLM returns a valid schema, but a tailored bullet adds a numeral
+          absent from the source (trips the real no-new-specifics guard)
+  when    tailor is invoked
+  then    raises TailoringError with reason 'guard_violation'; the failure is
+          logged at CRITICAL; no render happens and no file is written
   traces  tailoring.md §4; §6; invariant 7
 
-TC-ORCH-05  [int]   uut: tailor_once with a full Profile + JD fixture (mock LLM)
-  given   realistic Profile and JD; mock LLM returns a passing TailoredSelection
-  when    tailor_once is invoked end-to-end
-  then    returns a validated TailoredSelection with no errors
+TC-ORCH-05  [unit]  uut: tailor(...) with a renderer that fails to compile
+  given   the LLM output is valid and guards pass, but the LaTeX compile fails
+  when    tailor is invoked
+  then    raises TailoringError; no partial ArtifactResult is returned
+  traces  tailoring.md §6; invariant 7
+
+TC-ORCH-06  [unit]  uut: save_debug_artifact(tex_source, output_dir, enabled=True)
+  given   save_debug_artifacts is True
+  when    tailor runs
+  then    a debug/ folder is created beside the output and the intermediate
+          .tex is written into it
   traces  tailoring.md §6
+
+TC-ORCH-07  [unit]  uut: save_debug_artifact(tex_source, output_dir, enabled=False)
+  given   save_debug_artifacts is False (the default)
+  when    tailor runs
+  then    no debug/ folder is created
+  traces  tailoring.md §6
+
+TC-ORCH-08  [int]   uut: tailor(...) end-to-end with a mock LLM and the real renderer
+  given   a realistic Profile and JD; mock LLM returns a passing TailoredSelection
+  when    tailor is invoked
+  then    returns an ArtifactResult; no backend/registration call is made
+          anywhere in the layer (the boundary holds — the layer touches no DB)
+  traces  tailoring.md §5-boundary; §9
 ```
 
 ---
@@ -271,8 +317,10 @@ TC-ORCH-05  [int]   uut: tailor_once with a full Profile + JD fixture (mock LLM)
 
 **Depends on:** WP0
 **Deliverables:** `latex_escape(text) -> str`, `build_render_model(selection, profile) -> dict`,
-`render(selection, profile) -> Path`. Template owns all LaTeX syntax; the LLM
-never produces layout. One `[live]` test (Docker only).
+`render(selection, profile, *, template_path, output_dir) -> Path`. The renderer
+writes the compiled PDF to disk and returns its path; WP4 calls it as the final
+step of `tailor()`. The template owns all LaTeX syntax; the LLM never produces
+layout. 
 **Done when:** TC-RENDER-01 through TC-RENDER-09 pass.
 
 ```
@@ -305,14 +353,13 @@ TC-RENDER-05  [unit]  uut: render(selection, profile)
   given   selection with experience_order=[A, B] and project_order=[C]
   when    rendered
   then    experiences appear in order A then B; project C is present;
-          unselected items are absent from the .tex output
   traces  tailoring.md §2; §7
 
 TC-RENDER-06  [unit]  uut: render(selection, profile)
   given   the entry-level template structure
   when    rendered
   then    Skills and Projects sections precede Experience; Education section
-          is present; each item contains 3–5 bullets
+          is present; 
   traces  tailoring.md §7
 
 TC-RENDER-07  [unit]  uut: render(selection, profile)
@@ -325,7 +372,7 @@ TC-RENDER-07  [unit]  uut: render(selection, profile)
 TC-RENDER-08  [int]   uut: tectonic compile step
   given   a valid .tex file produced from a fixture
   when    tectonic is invoked
-  then    exits with code 0 and surfaces a clear error on bad input — does not hang
+  then    exits with code 0 and surfaces/raises a clear error on bad input — does not hang
   traces  tailoring.md §7
 
 TC-RENDER-09  [live]  uut: render(selection, profile) end-to-end — Docker only
@@ -335,111 +382,15 @@ TC-RENDER-09  [live]  uut: render(selection, profile) end-to-end — Docker only
   traces  invariant 8
 ```
 
----
+---W
 
-## WP6 — Artifact registration
+## Caller contract (owned by the scheduler and agent layers)
 
-**Depends on:** WP5 + backend (`POST /jobs/{id}/artifacts`, FSM)
-**Deliverables:** `register_artifact(job_id, pdf_path, kind) -> ArtifactRecord`,
-FSM advance to `PENDING_APPROVAL`, `save_debug_artifacts` flag + `debug/` folder.
-**Done when:** TC-ARTIFACT-01 through TC-ARTIFACT-05 pass.
+The tailoring layer's only public entry is `tailor(job_description, profile) ->
+ArtifactResult`, which raises `TailoringError` on failure. Everything that reads
+from or writes to the database sits with the caller, which is the scheduler for
+the daily batch and the agent for the on-demand tool. 
 
-```
-TC-ARTIFACT-01  [int]  uut: register_artifact(job_id, pdf_path, kind='cv_pdf')
-  given   a valid job_id and a PDF written to the expected path
-  when    register_artifact is called
-  then    PDF file exists at the expected path on disk
-  traces  tailoring.md §9
-
-TC-ARTIFACT-02  [int]  uut: POST /jobs/{id}/artifacts
-  given   a valid job_id
-  when    register_artifact calls POST /jobs/{id}/artifacts
-  then    artifact record created with correct job_id, path, and kind='cv_pdf'
-  traces  tailoring.md §9
-
-TC-ARTIFACT-03  [int]  uut: FSM advance after artifact registration
-  given   a successful artifact registration for a TAILORED job
-  when    FSM advance is triggered
-  then    job transitions to PENDING_APPROVAL
-  traces  tailoring.md §9
-
-TC-ARTIFACT-04  [unit]  uut: save_debug_artifacts(tex_path, output_dir, enabled=True)
-  given   save_debug_artifacts=True
-  when    tailoring completes
-  then    debug/ folder is created beside the output; .tex file is written there
-  traces  tailoring.md §6
-
-TC-ARTIFACT-05  [unit]  uut: save_debug_artifacts(tex_path, output_dir, enabled=False)
-  given   save_debug_artifacts=False (default)
-  when    tailoring completes
-  then    no debug/ folder is created
-  traces  tailoring.md §6
-```
-
----
-
-## WP7 — Entry points
-
-**Depends on:** WP4, WP6
-**Deliverables:** `select_batch(session, tailor_batch_size) -> list[Job]`
-(ordering `score DESC, posted_at DESC, id ASC` per architecture_v2.md §4),
-`run_tailor_batch(session, tailor_batch_size, tailor_service)`,
-`tailor_resume` agent tool. Batch tested as a plain function — not via the
-scheduler. Tool and batch share one service; no divergent code path.
-**Done when:** TC-ENTRY-01 through TC-ENTRY-08 pass.
-
-```
-TC-ENTRY-01  [unit]  uut: select_batch(session, tailor_batch_size=3)
-  given   multiple SCORED jobs with different scores
-  when    select_batch is called
-  then    returns the top 3 ordered by score DESC
-  traces  architecture_v2.md flow §4; §4 tailor-pass selection
-
-TC-ENTRY-02  [unit]  uut: select_batch(session, tailor_batch_size)
-  given   jobs in various FSM states (SCORED, TAILORED, PENDING_APPROVAL,
-          DISCOVERED)
-  when    select_batch is called
-  then    returns only SCORED jobs
-  traces  architecture_v2.md flow §4
-
-TC-ENTRY-03  [unit]  uut: run_tailor_batch(session, tailor_batch_size=2, tailor_service)
-  given   5 SCORED jobs available
-  when    run_tailor_batch is called with tailor_batch_size=2
-  then    exactly 2 jobs are processed; the remaining 3 are untouched
-  traces  architecture_v2.md flow §4
-
-TC-ENTRY-04  [unit]  uut: run_tailor_batch — guard violation path
-  given   a job whose tailoring produces a guard violation
-  when    run_tailor_batch processes it
-  then    job remains in SCORED; error logged at CRITICAL level;
-          no artifact registered
-  traces  tailoring.md §6; invariant 7
-
-TC-ENTRY-05  [int]   uut: run_tailor_batch end-to-end (mock LLM)
-  given   one SCORED job; mock LLM returning a valid fixture TailoredSelection
-  when    run_tailor_batch is called
-  then    job transitions SCORED → PENDING_APPROVAL; artifact registered
-  traces  architecture_v2.md flow §4; tailoring.md §9
-
-TC-ENTRY-06  [int]   uut: tailor_resume tool (mock LLM)
-  given   a specific job_id; mock LLM returning a valid fixture
-  when    tailor_resume tool is invoked
-  then    same service as batch is called; job transitions to PENDING_APPROVAL
-  traces  tailoring.md §9
-
-TC-ENTRY-07  [int]   uut: tailor_resume tool vs run_tailor_batch — shared service
-  given   the same job fixture passed to each entry point
-  when    each is called with the same input
-  then    both invoke the same underlying tailor_once + render pipeline;
-          no divergent code path
-  traces  tailoring.md §9
-
-TC-ENTRY-08  [unit]  uut: select_batch(session, tailor_batch_size)
-  given   SCORED jobs where two share the same score, and two share both
-          the same score and the same posted_at
-  when    select_batch is called
-  then    ties break deterministically by posted_at DESC, then id ASC
-          (fresher listing first; lowest id as the final tiebreak)
-  traces  architecture_v2.md §4 tailor-pass selection
-          (ORDER BY score DESC, posted_at DESC, id ASC)
-```
+The single most important property this boundary buys is that the tailoring layer
+can be tested end-to-end with only a mock LLM and no backend at all, because it
+has no database dependency to stub. TC-ORCH-08 asserts exactly this.

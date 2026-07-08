@@ -1,9 +1,8 @@
 # Tailoring Layer — Design Decisions
 
-> Scope: build-order step 5 (`Tailoring service`), target **v0.6.x**.
+> Scope: build-order step 5 (`Tailoring service`)
 > Complements `architecture_v2.md` §5 (Tailoring Service) and §7 (LaTeX output
-> path, incorporated skills). This file records *decisions and their rationale*,
-> not implementation steps. Each decision is stable unless superseded here.
+> path, incorporated skills). 
 
 ---
 
@@ -77,18 +76,7 @@ number is flagged.
 
 ---
 
-## 5. Scoring: discovery only
-
-| | |
-|---|---|
-| **Decision** | The scorer runs **once, at discovery** — `score(jd_text, full_profile) -> int (0–10000)`. Tailoring does **not** re-score. |
-| **Rationale** | The three-tier model (§2) + `demonstrated_skills` (§3) is the correctness guarantee. A post-tailor re-score would be redundant validation on top of structural enforcement, and adds complexity (serializer, loop, target, settings) with no truthfulness benefit. |
-| **Discovery threshold** | Lenient and configurable (`score_threshold`). Discovery is a coarse filter — "plausibly relevant, let it through." The daily budget (`tailor_batch_size`) is the real throttle, not the threshold. |
-| **Deferred (0.7.x)** | Once embeddings land (v2.1), mean-pooling the bloated superset into one vector can depress good-fit jobs in the top-N ranking. Fix: rank on profile *chunks* (top-k / max-pool similarity), not one pooled blob. |
-
----
-
-## 6. The tailoring call (single pass)
+## 5. The tailoring call (single pass)
 
 ```
 tailored = llm_tailor(jd, profile)     # one LLM call; no iteration
@@ -111,7 +99,7 @@ production.
 
 ---
 
-## 7. Renderer (deterministic)
+## 6. Renderer (deterministic)
 
 - Single Jinja2 `.tex` template owns **all** LaTeX syntax; the LLM never emits
   LaTeX. (LaTeX equivalent of invariant 2.)
@@ -122,8 +110,8 @@ production.
 - **One entry-level template** (Skills + Projects prioritised, Education
   weighted, 3–5 achievement bullets). No multi-template selection — that would
   reopen the "LLM affects layout" question.
-- Cover letter is a **plain-text artifact** (`kind='cover_letter'`), not a second
-  LaTeX render — delivered as text via Telegram.
+- Cover letter is a **plain-text artifact** (`kind='cover_letter'`) (I.E WORD DOCUMENT), not a second
+  LaTeX render — delivered as text (PDF ATTACHMENT) via Telegram.
 
 ---
 
@@ -182,7 +170,7 @@ containment, no-new-specifics diff against `Profile`.
   only by the tailoring stage, never on every chat call. They constrain content
   selection only — they never touch the renderer.
 - **Artifacts** written to disk, registered via `POST /jobs/{id}/artifacts`;
-  reaching `TAILORED` advances the FSM toward `PENDING_APPROVAL`.
+  reaching `TAILORED` advances the FSM toward `PENDING_APPROVAL`. HOWEVER, The tailoring layer does not advance the FSM. the caller does so...
 
 ---
 
@@ -199,9 +187,4 @@ containment, no-new-specifics diff against `Profile`.
 
 ---
 
-## 11. Deferred decisions (flagged, not solved here)
 
-| Item | When | Note |
-|---|---|---|
-| Discovery **ranking** dilution | 0.7.x | A lenient gate fixes the gate, not the top-N ranking. Once embeddings land (v2.1), rank on profile **chunks** (top-k / max-pool similarity), not one pooled blob. |
-| `demonstrated_skills` authoring | step 4 | Manual vs parse-proposed-then-reviewed. Tie to CV→profile parse. |
