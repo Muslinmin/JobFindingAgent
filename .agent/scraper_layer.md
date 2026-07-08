@@ -15,9 +15,8 @@ The scraper layer has four work packages, executed in dependency order:
 | WP-S1 | Careers@Gov adapter — finalise and test | Code exists, needs alignment + tests |
 | WP-S2 | MCF adapter — implement from scratch | Recon done, ready to build |
 | WP-S3 | JobStreet adapter — recon then implement | Recon incomplete, do not build yet |
-| WP-S4 | Pipeline runner — fan-out + scheduler wiring | Depends on WP-S1 and WP-S2 |
+| WP-S4 | Pipeline runner — fan-out + in-process ingest | Depends on WP-S1 and WP-S2 |
 
-WP-S1 and WP-S2 are independent of each other. WP-S4 depends on both. WP-S3 is gated on recon completion and can be done in parallel with WP-S4.
 
 ---
 
@@ -211,11 +210,7 @@ Plain GET on `sg.jobstreet.com/{query}-jobs` returns server-rendered HTML. Listi
 Complete these steps before writing any code. Record every finding — they become the doc update.
 
 ```
-[ ] Run DevTools Step 2 on sg.jobstreet.com:
-      - Clear the network tab, then paginate or apply a filter to trigger a pure data request
-      - Filter for: graphql, chalice, api, search, jobs
-      - Sort by response size; identify the largest JSON response
-      - Inspect headers (full URL, method) and request body shape
+
 
 [ ] Check __NEXT_DATA__ in page source:
       - curl sg.jobstreet.com/<query>-jobs
@@ -300,16 +295,17 @@ async def run_scrape(
 ) -> None: ...
 ```
 
-The scheduler setup binds the real service function:
+The **scheduling layer** (a separate layer, not part of the scraper layer) imports `run_scrape` and registers it on a 24-hour tick, alongside its other scheduled jobs. The scraper layer's only responsibility is to expose `run_scrape` as a clean, importable async function. For reference, the registration the scheduling layer performs looks like this:
 
 ```python
+# This lives in the SCHEDULING layer, shown here only for context.
 scheduler.add_job(
     run_scrape, "interval", hours=24,
     kwargs={"queries": ..., "adapters": ..., "ingest_job": service.ingest_job},
 )
 ```
 
-File: `src/scraper/pipeline.py`
+File (scraper layer): `src/scraper/pipeline.py` — contains `run_scrape` and nothing about APScheduler.
 
 ### Implementation tasks
 
@@ -374,9 +370,9 @@ test_pipeline_ingests_correct_jobcreate
 ### Definition of done
 
 - All unit tests pass
-- `run_scrape` is wired to APScheduler with 24-hour interval in `src/scraper/scheduler.py`
-- Scheduler startup/shutdown tested as a module-level integration test (no APScheduler internals, just that `run_scrape` is registered with correct interval)
-- `architecture_v2.md` scraper section updated to reflect pipeline runner
+- `run_scrape` is exposed as a plain importable async function with no APScheduler knowledge
+- Registering `run_scrape` on a 24-hour tick is owned by the **scheduling layer**, not the scraper layer — the scheduling layer imports `run_scrape` and registers it alongside its other scheduled jobs (lifecycle, follow-up, tailor, query regeneration, digest). No `scheduler.py` lives in the scraper layer.
+- `architecture_v2.md` scraper section updated to reflect the pipeline runner
 
 ---
 
@@ -388,8 +384,7 @@ src/
     careers_gov_adapter.py   # WP-S1
     mcf_adapter.py           # WP-S2
     jobstreet_adapter.py     # WP-S3
-    pipeline.py              # WP-S4  (run_scrape)
-    scheduler.py             # WP-S4  (APScheduler wiring)
+    pipeline.py              # WP-S4  (run_scrape — exposed for the scheduling layer to register)
 
 tests/
   unit/
