@@ -9,7 +9,7 @@ deterministic clock, calling the LLM only at the stages that genuinely need
 judgement. It is **not** the agent — the agent is reactive (wakes on demand via
 `POST /chat`). The scheduler is proactive (wakes on a clock).
 
-All writes go through the backend service layer, which instance is injected so scheduler can call the functions without directly interacting with backend. The scheduler never writes to the DB directly.
+All writes go through the backend service layer. The `JobService` facade — a single object that gathers the backend's functions behind one clean interface — is injected into the scheduler as an instance, so each job calls those functions directly as ordinary in-process calls rather than reaching the backend over HTTP. The scheduler never writes to the database directly.
 
 ---
 
@@ -43,7 +43,7 @@ query_regen  (Monday only, runs before scrape so same-day queries are fresh)
 
 | Job | Cadence | LLM? | Responsibility |
 |---|---|---|---|
-| `scrape` | daily | no | queries → adapters → `POST /jobs` → score → SCORED \| REJECTED |
+| `scrape` | daily | no | queries → adapters → `ingest_job()` → score → SCORED \| REJECTED |
 | `lifecycle` | daily | no | three deterministic time rules on `status_changed_at` |
 | `follow_up` | daily | yes (small N) | APPLIED past threshold → draft email → Telegram push |
 | `tailor` | daily | yes (budgeted) | top-N SCORED → tailor → PDF → PENDING_APPROVAL → Telegram push |
@@ -138,7 +138,7 @@ stubs (log "job started / finished", no logic). Add all settings above to
 ### WP-S2 — Scrape Job
 
 **Scope:** Daily job. Reads `search_queries.json`, fans out across all registered
-adapters for each query, posts each normalized `JobCreate` to `POST /jobs`, then
+adapters for each query, ingests each normalized `JobCreate` via the injected `ingest_job` service function, then
 immediately scores each new `DISCOVERED` record and transitions it to `SCORED` or
 `REJECTED`.
 
@@ -147,34 +147,45 @@ record sitting unscored between runs. `DISCOVERED` is a transient state — a jo
 should never be in `DISCOVERED` at the start of a new scrape cycle.
 
 **Pipeline design notes:**
-`run_scrape` is a single async function that fans out queries across adapters and ingests results **in-process through the consolidated service layer** — it does **not** make HTTP calls to the backend. The scheduler calls the service layer directly, and `run_scrape` is scheduler-triggered, so calling `POST /jobs` over HTTP would be a self-HTTP call against our own process. Instead, `run_scrape` calls `service.ingest_job()` directly. Dedup is unchanged — it still happens inside `ingest_job` (fingerprint → repository upsert).
+`run_scrape` is a single async function that fans out queries across adapters and passes each result to the injected `JobService` facade by calling `service.ingest_job()` directly, so there is no network call. Deduplication is unchanged — it still happens inside `ingest_job` (fingerprint → repository upsert).
 
 
-The `ingest_job` service function is injected as a callable, not imported directly. This keeps the pipeline decoupled from the service module and trivially mockable in tests (no HTTP client, no service object graph).
+The `JobService` facade is injected as an instance, not imported directly; the scrape job calls `service.ingest_job(...)`. This keeps the pipeline decoupled from the service module and trivially mockable in tests, because a test passes a mock facade exposing only `ingest_job` (no HTTP client, no service object graph).
 
 ```python
-# IngestJobFn: Callable[[JobCreate], Awaitable[Job]] — this is service.ingest_job
-
 async def run_scrape(
-    queries: list[str],
     adapters: list[JobSource],
-    ingest_job: IngestJobFn,     # injected service.ingest_job — in-process, no HTTP
-    delay_s: float = 1.0,
-) -> None: ...
+    service: JobService,   # injected in-process facade — no HTTP calls
+    scorer: Scorer,        # injected instance, separate from the facade; scorer.score(...) is async — one embeddings-API network call per record
+    settings: Settings,    # holds score_threshold for the SCORED / REJECTED gate
+    queries_path: Path,    # search_queries.json — re-read on every run
+    delay_s: float = 1.0,  # pause between adapter fetches
+) -> None:
+    queries = _load_queries(queries_path)   # read fresh each run — picks up the weekly query_regen output
+    if queries is None:                     # missing file: already logged inside _load_queries
+        return
+    await _fan_out(queries, adapters, service, scorer, settings, delay_s)
 ```
 
 ```python
 scheduler.add_job(
     run_scrape, "interval", hours=24,
-    kwargs={"queries": ..., "adapters": ..., "ingest_job": service.ingest_job},
+    kwargs={"adapters": ..., "service": service, "scorer": scorer,
+            "settings": settings, "queries_path": queries_path},
 )
 ```
 
+`run_scrape` re-reads `search_queries.json` at the start of every run rather than receiving a fixed query list. This matters because the weekly `query_regen` job rewrites that file; if the query list were bound once when the scheduler registered the job, every regeneration would be ignored until the application restarted. Reading the file each run keeps the daily scrape current. The fan-out itself lives in `_fan_out`, which takes the query list as an argument and is the unit-tested core, while `run_scrape` is the thin wrapper that loads the file and calls it.
+
+The scorer is a separate injected instance, not part of the `JobService` facade; the scrape job holds both. Its `score` method is `async` on purpose, because producing an embedding is a network call to the embeddings API. Marking it `async` and awaiting it lets the event loop — the async runtime that interleaves tasks while they wait on input/output — do other work during each round-trip instead of stalling the whole process on the network. That is the right default for every I/O-bound call in this pipeline, and the scorer is I/O-bound because it hits the network once per record.
+
 #### Implementation tasks
 
-1. For each query × adapter: call `adapter.fetch(query)`, then `await ingest_job(job_create)` for each returned `JobCreate`
+`run_scrape` first reads the current queries via `_load_queries(queries_path)` on every run (missing file → log a warning and return), then delegates the fan-out below to `_fan_out`:
+
+1. For each query × adapter: call `adapter.fetch(query)`, then `await service.ingest_job(job_create)` for each returned `JobCreate`
 2. Wrap each `adapter.fetch()` call in try/except — one adapter failure must not abort the others
-3. Wrap each `ingest_job()` call in try/except — one ingest failure must not abort remaining ingests
+3. Wrap each `service.ingest_job()` call in try/except — one ingest failure must not abort remaining ingests
 4. Apply configurable `delay_s` between adapter calls
 5. Log a summary per adapter per query: adapter name, query, number of jobs fetched, number of ingests succeeded
 
@@ -189,34 +200,40 @@ scheduler.add_job(
 
 
 ```
+# The fan-out tests below target _fan_out directly (queries passed in). run_scrape's
+# file-loading is covered by the two loader tests at the end. Each fan-out test provides:
+#   mock_service  — AsyncMock ingest_job (+ transition_status)
+#   mock_scorer   — AsyncMock score returning a fixed int
+#   mock_settings — score_threshold set so ingested jobs land SCORED
+# delay_s=0 unless the test is specifically about the delay.
+
 test_pipeline_fans_out_across_adapters
   Two mock adapters (mock_adapter_a, mock_adapter_b) each returning 2 JobCreate instances
   One query string: ["engineer"]
-  Mock ingest_job callable (AsyncMock) capturing calls
-  Call await run_scrape(queries=["engineer"], adapters=[mock_adapter_a, mock_adapter_b], ingest_job=mock_ingest)
+  Call await _fan_out(queries=["engineer"], adapters=[mock_adapter_a, mock_adapter_b], service=mock_service, scorer=mock_scorer, settings=mock_settings, delay_s=0)
   Assert: mock_adapter_a.fetch called once with "engineer"
   Assert: mock_adapter_b.fetch called once with "engineer"
-  Assert: mock_ingest called 4 times total (2 adapters × 2 jobs each)
+  Assert: mock_service.ingest_job called 4 times total (2 adapters × 2 jobs each)
 
 test_pipeline_fans_out_across_queries
   One mock adapter returning 2 JobCreate instances per call
   Two query strings: ["engineer", "analyst"]
   Assert: adapter.fetch called twice (once per query)
-  Assert: mock_ingest called 4 times total
+  Assert: mock_service.ingest_job called 4 times total
 
 test_pipeline_one_adapter_failure_does_not_abort_others
   mock_adapter_a.fetch raises an exception
   mock_adapter_b.fetch returns 2 JobCreate instances
-  Call run_scrape with both adapters
-  Assert: mock_ingest called 2 times (mock_adapter_b's jobs ingested)
-  Assert: no exception propagates out of run_scrape()
+  Call _fan_out with both adapters
+  Assert: mock_service.ingest_job called 2 times (mock_adapter_b's jobs ingested)
+  Assert: no exception propagates out of _fan_out()
   Assert: logger.warning called at least once
 
 test_pipeline_ingest_failure_does_not_abort_pipeline
   One mock adapter returning 3 JobCreate instances
-  mock_ingest raises an exception on the first call, succeeds on subsequent calls
-  Assert: no exception propagates out of run_scrape()
-  Assert: remaining ingests still attempted (mock_ingest called 3 times total)
+  mock_service.ingest_job raises an exception on the first call, succeeds on subsequent calls
+  Assert: no exception propagates out of _fan_out()
+  Assert: remaining ingests still attempted (mock_service.ingest_job called 3 times total)
   Assert: logger.warning called at least once
 
 test_pipeline_delay_between_requests
@@ -226,14 +243,26 @@ test_pipeline_delay_between_requests
 
 test_pipeline_empty_adapter_result
   Mock adapter returns []
-  Assert: mock_ingest never called
+  Assert: mock_service.ingest_job never called
   Assert: no exception raised
   Assert: no warning logged
 
 test_pipeline_ingests_correct_jobcreate
   Mock adapter returns one JobCreate with known field values
-  Assert: mock_ingest called once with that exact JobCreate instance
+  Assert: mock_service.ingest_job called once with that exact JobCreate instance
   (identity/equality check on the argument — no serialization involved)
+
+test_run_scrape_reads_queries_file_each_run
+  Patch _load_queries to return ["engineer"]; one mock adapter returning 1 JobCreate
+  Call await run_scrape(adapters=[adapter], service=mock_service, scorer=mock_scorer,
+                        settings=mock_settings, queries_path=<tmp path>)
+  Assert: _load_queries called once during the run (queries read at call time, not bound at registration)
+  Assert: adapter.fetch called with "engineer"
+
+test_run_scrape_missing_queries_file_returns
+  _load_queries returns None (file absent)
+  Call await run_scrape(..., queries_path=<nonexistent path>)
+  Assert: no adapter.fetch, no ingest, logger.warning called, no exception raised
 ```
 
 ---
@@ -249,7 +278,7 @@ APPLIED / INTERVIEWING  older than ghost_after_days → GHOSTED  (+ Telegram not
 ```
 
 All comparisons key off `status_changed_at`. Each transition is a
-`PATCH /jobs/{id}/status` call through the backend service layer through injected instance — never a direct DB write.
+`service.transition_status(job_id, to_status)` call on the injected `JobService` facade — never a direct database write.
 
 For each `GHOSTED` transition, send a one-line Telegram notification:
 `"No response from {company} ({role}) — marked as ghosted."`
@@ -257,20 +286,20 @@ For each `GHOSTED` transition, send a one-line Telegram notification:
 `EXPIRED` and `REJECTED` transitions are silent (no Telegram push).
 
 **Implementation notes:**
-- Query each bucket via `GET /jobs?status=...`; filter in Python on
+- Query each bucket via `service.query_jobs(status_set, ...)`; filter in Python on
   `status_changed_at` age vs the relevant threshold.
 - Process all three buckets in a single job invocation; log counts at the end
   (`n_expired`, `n_stale_rejected`, `n_ghosted`).
 - Telegram client injected; not called for EXPIRED or REJECTED transitions.
 
 **Tests:**
-- Mock the backend API and Telegram client.
+- Mock the injected `JobService` facade (its `query_jobs` and `transition_status` methods) and the Telegram client.
 - Inject records at controlled `status_changed_at` values (exactly at threshold
   = no transition; one day over = transition fires).
 - Assert each rule fires correctly at the boundary.
 - Assert Telegram is called exactly once per `GHOSTED` transition.
 - Assert Telegram is never called for `EXPIRED` or `REJECTED` transitions.
-- Assert one record's `PATCH` failure is caught and logged without aborting the
+- Assert one record's `transition_status` failure is caught and logged without aborting the
   remaining records.
 
 **Definition of done:**
@@ -293,7 +322,7 @@ for job where status = APPLIED
     Telegram push: context + draft email + [Sent it] [Skip]
 ```
 
-`[Sent it]` → `POST /jobs/{id}/follow-up` (increments `follow_up_count`, stamps
+`[Sent it]` → `service.record_follow_up(job_id)` (increments `follow_up_count`, stamps
 `last_follow_up_at`; status stays `APPLIED`).
 
 **Ghost clock is NOT reset by follow-up activity.** The ghost clock keys off
@@ -304,7 +333,7 @@ for job where status = APPLIED
 follow_up_after_days` → same draft + push flow.
 
 **Implementation notes:**
-- Query via `GET /jobs?status=APPLIED`; filter in Python on `status_changed_at`
+- Query via `service.query_jobs({APPLIED}, ...)`; filter in Python on `status_changed_at`
   age and `follow_up_count`.
 - LLM call is one per qualifying record: `llm_draft_followup(role, company,
   applied_date) -> str`. Use the same LiteLLM client as the rest of the pipeline;
@@ -318,7 +347,7 @@ follow_up_after_days` → same draft + push flow.
 - Assert LLM is called only for qualifying records (not for records below the
   age threshold or with follow_up_count > 0).
 - Assert Telegram push fires once per qualifying record.
-- Assert `POST /jobs/{id}/follow-up` is called when `[Sent it]` fires.
+- Assert `service.record_follow_up(job_id)` is called when `[Sent it]` fires.
 - Assert `status_changed_at` is unchanged after a follow-up (ghost clock not
   reset).
 - Assert second-nudge logic fires for `follow_up_count = 1` past the interval.
@@ -338,7 +367,7 @@ SCORED records by the deterministic ranking query, calls the tailoring service f
 each, registers the PDF artifact, transitions to `PENDING_APPROVAL`, and pushes to
 Telegram.
 
-**Selection query (deterministic):**
+**Selection ranking (deterministic, implemented inside `select_top_scored`):**
 ```sql
 SELECT ... WHERE status = 'SCORED'
 ORDER BY score DESC,      -- exact integer comparison
@@ -356,12 +385,14 @@ URL, tailored CV PDF attached, inline keyboard `[Mark Applied]` `[Skip]`
 (Phase 1); `[Apply for me]` `[Skip]` (Phase 2).
 
 **Implementation notes:**
-- Call `GET /jobs?status=SCORED&limit=tailor_batch_size&order_by=score,posted_at,id`
-  (or equivalent) to get the batch; ordering is enforced server-side.
+- Call `service.select_top_scored(limit=tailor_batch_size)` to get the batch. This
+  dedicated service read applies the deterministic ranking (score descending, then
+  `posted_at` descending, then `id` ascending); ordering is enforced inside the
+  service, not in the job.
 - For each record: call `tailoring_service.tailor(jd, profile)` → validate
   schema and guards → `render(tailored, profile)` → PDF bytes →
-  `POST /jobs/{id}/artifacts` → `PATCH /jobs/{id}/status` to
-  `PENDING_APPROVAL` → Telegram push with PDF.
+  `service.register_artifact(job_id, artifact)` →
+  `service.transition_status(job_id, PENDING_APPROVAL)` → Telegram push with PDF.
 - Tailoring service, Telegram client.
 **Tests:**
 - Mock tailoring service and Telegram client.
@@ -406,7 +437,7 @@ the next scrape run picks it up.
 - Assert `search_queries.json` is written with the correct content.
 - Assert backup is created when the file exists and differs.
 - Assert no write occurs when content is identical (idempotency).
-- Assert missing `profile.json` logs a warning and raise an error.
+- Assert missing `profile.json` logs a warning and returns without writing (no error raised).
 - All file I/O uses `tmp_path`.
 
 **Definition of done:**
@@ -420,7 +451,7 @@ the next scrape run picks it up.
 ### WP-S7 — Digest Job
 
 **Scope:** Weekly (Monday, after all daily jobs complete). Pulls pipeline state
-counts from the backend API and pushes a structured summary to Telegram. LLM is
+counts through the injected `JobService` facade and pushes a structured summary to Telegram. LLM is
 optional — default is a deterministic template (zero tokens).
 
 **Default Telegram message format:**
@@ -434,14 +465,14 @@ Expired (last 7d):  {n}
 ```
 
 **Implementation notes:**
-- Pull counts via `GET /jobs?status=...` for each relevant status; compute
+- Pull counts via `service.query_jobs(status_set, ...)` for each relevant status; compute
   follow-ups due using the same logic as the follow-up job's check query.
 - Format and send via Telegram client.
 - No LLM call in the default path. An optional `digest_narrative: bool` setting
   can enable a single LLM call to add a one-line summary sentence if desired.
 
 **Tests:**
-- Mock backend API returning fixture counts and Telegram client.
+- Mock the injected `query_jobs` facade method returning fixture counts, and the Telegram client.
 - Assert the Telegram message content matches the expected format.
 - Assert no LLM call in the default (template) path.
 - Assert `digest_narrative = true` triggers exactly one LLM call.
@@ -458,12 +489,12 @@ Expired (last 7d):  {n}
 | Step | Work Package | Depends on |
 |---|---|---|
 | 1 | WP-S1 — Scheduler bootstrap | Backend API lifespan hook |
-| 2 | WP-S2 — Scrape job | Adapters (WP-A complete), scoring function, `POST /jobs` |
-| 3 | WP-S3 — Lifecycle job | Backend FSM (`PATCH /jobs/{id}/status`), Telegram client |
-| 4 | WP-S4 — Follow-up job | `POST /jobs/{id}/follow-up`, LiteLLM client, Telegram client |
-| 5 | WP-S5 — Tailor job | Tailoring service, `POST /jobs/{id}/artifacts`, Telegram client |
+| 2 | WP-S2 — Scrape job | Adapters (WP-A complete), scoring function, `JobService.ingest_job` |
+| 3 | WP-S3 — Lifecycle job | Backend FSM (`transition_status`), Telegram client |
+| 4 | WP-S4 — Follow-up job | `record_follow_up`, LiteLLM client, Telegram client |
+| 5 | WP-S5 — Tailor job | Tailoring service, `select_top_scored`, `register_artifact`, `transition_status`, Telegram client |
 | 6 | WP-S6 — Query regen | LiteLLM client, `profile.json`, file I/O |
-| 7 | WP-S7 — Digest | `GET /jobs?status=...`, Telegram client |
+| 7 | WP-S7 — Digest | `query_jobs`, Telegram client |
 
 WP-S1 through WP-S3 form the deterministic backbone (zero LLM dependency) and
 should ship together. WP-S4 through WP-S7 add the LLM-touching stages
@@ -473,8 +504,8 @@ incrementally in dependency order.
 
 ## Invariants
 
-1. The scheduler never writes to the DB directly. All writes go through the
-   backend API.
+1. The scheduler never writes to the database directly. All writes go through the
+   backend service layer as in-process function calls, never over HTTP.
 2. Jobs that need no judgement (scrape, scoring, lifecycle, digest default) never
    call the LLM.
 3. All time rules key off `status_changed_at`. Follow-up activity never resets
@@ -493,7 +524,7 @@ Layout follows the modular per-concern convention. All jobs live under a
 
 **Dependency ownership.** The scheduler owns none of the clients it calls. The
 `TelegramClient` is owned by the Telegram layer (`telegram/client.py`); the
-backend HTTP client and the LiteLLM client are owned by their respective layers.
+`JobService` facade and the LiteLLM client are owned by their respective layers.
 All are constructed once in the FastAPI lifespan hook (WP-S1 / WP-T1) and injected
 into each job. The scheduler depends on these interfaces; it never constructs them.
 
@@ -516,7 +547,7 @@ Injected interfaces, by owning layer (none constructed by the scheduler):
 | Interface | Owned by | Used by jobs |
 |---|---|---|
 | `TelegramClient` | `telegram/client.py` | lifecycle, follow_up, tailor, digest |
-| `BackendClient` (httpx wrapper) | backend layer | all jobs |
+| `JobService` (in-process service facade) | backend layer | all jobs |
 | `LLMClient` (LiteLLM) | agent/LLM layer | follow_up, tailor (via tailoring service), query_regen |
 | `Scorer` Protocol (`async score(jd_text, candidate) -> int`, `name`) | scoring layer | scrape |
 | tailoring service `tailor(jd, profile)` | tailoring layer | tailor |
@@ -554,7 +585,7 @@ async def stop_scheduler(scheduler: AsyncIOScheduler) -> None:
 ```
 
 `SchedulerDeps` is the injection bundle — a frozen dataclass holding the
-`TelegramClient`, `BackendClient`, `LLMClient`, scorer, and tailoring service,
+`TelegramClient`, `JobService` facade, `LLMClient`, scorer, and tailoring service,
 constructed once in the lifespan hook and shared across all jobs.
 
 ### `scheduler/jobs/scrape.py` — WP-S2
@@ -562,14 +593,28 @@ constructed once in the lifespan hook and shared across all jobs.
 ```python
 async def run_scrape(
     adapters: list[JobSource],
-    backend: BackendClient,
-    scorer: Scorer,                # Protocol: async score(jd_text, candidate) -> int; name
+    service: JobService,
+    scorer: Scorer,        # injected instance; async score(jd_text, candidate) -> int is an embeddings-API network call; also exposes name
     settings: Settings,
+    queries_path: Path,
+    delay_s: float = 1.0,
 ) -> None:
-    """Load search_queries.json, fan out across adapters, POST each JobCreate,
-    then score each new DISCOVERED record -> SCORED | REJECTED.
-    Missing queries file: log warning and return. Adapter exception: log and
-    continue with the remaining adapters."""
+    """Read the CURRENT search_queries.json via _load_queries(queries_path) on every
+    run, so weekly query_regen updates take effect without an app restart. Missing
+    file: log warning and return. Otherwise delegate to _fan_out."""
+    ...
+
+async def _fan_out(
+    queries: list[str],
+    adapters: list[JobSource],
+    service: JobService,
+    scorer: Scorer,
+    settings: Settings,
+    delay_s: float,
+) -> None:
+    """Testable core. For each query x adapter: fetch, then ingest + score each
+    JobCreate via _ingest_and_score. Adapter and per-job failures are isolated
+    (logged; the loop continues). Sleeps delay_s between adapter fetches."""
     ...
 
 def _load_queries(path: Path) -> list[str] | None:
@@ -577,9 +622,9 @@ def _load_queries(path: Path) -> list[str] | None:
     ...
 
 async def _ingest_and_score(
-    jobs: list[JobCreate], backend: BackendClient, scorer: Scorer, settings: Settings
+    jobs: list[JobCreate], service: JobService, scorer: Scorer, settings: Settings
 ) -> None:
-    """POST each job (backend dedups). For each new DISCOVERED record:
+    """Ingest each job via service.ingest_job (backend dedups). For each new DISCOVERED record:
       score = await scorer.score(jd_text, profile)
       status = SCORED if score >= settings.score_threshold else REJECTED
     The gate lives here, not in the scorer — the scorer only returns the int.
@@ -591,7 +636,7 @@ async def _ingest_and_score(
 
 ```python
 async def run_lifecycle(
-    backend: BackendClient,
+    service: JobService,
     telegram: TelegramClient,
     settings: Settings,
 ) -> None:
@@ -599,15 +644,15 @@ async def run_lifecycle(
       PENDING_APPROVAL > pending_expiry_days -> EXPIRED   (silent)
       SCORED           > stale_after_days     -> REJECTED  (silent)
       APPLIED/INTERVIEWING > ghost_after_days -> GHOSTED   (+ telegram notice)
-    Per-record PATCH failure is caught and logged; batch continues."""
+    Per-record transition_status failure is caught and logged; batch continues."""
     ...
 
-async def _expire_pending(backend: BackendClient, settings: Settings) -> int: ...
+async def _expire_pending(service: JobService, settings: Settings) -> int: ...
 
-async def _reject_stale(backend: BackendClient, settings: Settings) -> int: ...
+async def _reject_stale(service: JobService, settings: Settings) -> int: ...
 
 async def _ghost_silent_applicants(
-    backend: BackendClient, telegram: TelegramClient, settings: Settings
+    service: JobService, telegram: TelegramClient, settings: Settings
 ) -> int:
     """Transition + send one ghost notice per record:
     'No response from {company} ({role}) — marked as ghosted.'"""
@@ -618,7 +663,7 @@ async def _ghost_silent_applicants(
 
 ```python
 async def run_follow_up(
-    backend: BackendClient,
+    service: JobService,
     llm: LLMClient,
     telegram: TelegramClient,
     settings: Settings,
@@ -645,22 +690,23 @@ async def _draft_and_push(
 
 ```python
 async def run_tailor(
-    backend: BackendClient,
+    service: JobService,
     tailoring: TailoringService,
     telegram: TelegramClient,
     settings: Settings,
 ) -> None:
-    """Select top tailor_batch_size SCORED (score DESC, posted_at DESC, id ASC),
+    """Select top tailor_batch_size SCORED via service.select_top_scored
+    (score DESC, posted_at DESC, id ASC),
     tailor each -> PDF -> register artifact -> PENDING_APPROVAL -> push with
     PDF + [Mark Applied] [Skip]. Guard violation or exception on one record:
     log, mark that record failed, continue the batch."""
     ...
 
 async def _tailor_one(
-    job: Job, tailoring: TailoringService, backend: BackendClient, telegram: TelegramClient
+    job: Job, tailoring: TailoringService, service: JobService, telegram: TelegramClient
 ) -> None:
     """tailor -> validate (schema + guards) -> render PDF ->
-    POST /jobs/{id}/artifacts -> PATCH status PENDING_APPROVAL ->
+    service.register_artifact -> service.transition_status(PENDING_APPROVAL) ->
     send_document + send_message_with_keyboard. Guard breach raises; caught by caller."""
     ...
 ```
@@ -702,8 +748,8 @@ class DigestCounts:
     ghosted_last_7d: int
     expired_last_7d: int
 
-async def collect_counts(backend: BackendClient, settings: Settings) -> DigestCounts:
-    """Pull active-state counts via GET /jobs?status=...; compute follow_ups_due
+async def collect_counts(service: JobService, settings: Settings) -> DigestCounts:
+    """Pull active-state counts via service.query_jobs(status_set, ...); compute follow_ups_due
     with the same predicate as the follow-up job; count GHOSTED/EXPIRED in last 7d."""
     ...
 
@@ -712,7 +758,7 @@ def format_digest(counts: DigestCounts, today: date) -> str:
     ...
 
 async def run_digest(
-    backend: BackendClient,
+    service: JobService,
     telegram: TelegramClient,
     settings: Settings,
 ) -> None:
@@ -726,7 +772,7 @@ async def run_digest(
 ```
 tests/scheduler/
   test_bootstrap.py     # WP-S1: scheduler start/stop, cron registration
-  test_scrape.py        # WP-S2: ingest, dedup, score transitions, adapter isolation
+  test_scrape.py        # WP-S2: fresh-queries load, fan-out, ingest, dedup, score transitions, adapter isolation
   test_lifecycle.py     # WP-S3: three rules, boundaries, ghost-notice-only
   test_follow_up.py     # WP-S4: predicate filter, LLM-only-on-match, ghost clock untouched
   test_tailor.py        # WP-S5: batch cap, ordering, guard-skip, batch isolation
