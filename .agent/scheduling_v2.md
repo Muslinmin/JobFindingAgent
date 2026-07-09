@@ -249,7 +249,7 @@ APPLIED / INTERVIEWING  older than ghost_after_days → GHOSTED  (+ Telegram not
 ```
 
 All comparisons key off `status_changed_at`. Each transition is a
-`PATCH /jobs/{id}/status` call through the backend API — never a direct DB write.
+`PATCH /jobs/{id}/status` call through the backend service layer through injected instance — never a direct DB write.
 
 For each `GHOSTED` transition, send a one-line Telegram notification:
 `"No response from {company} ({role}) — marked as ghosted."`
@@ -349,7 +349,7 @@ LIMIT :tailor_batch_size
 
 **Guard violation** (from tailoring service) → log the failure, mark the
 individual record failed, continue to the next record. One failure never aborts
-the batch.
+the batch. FSM does not update for that job.
 
 **Telegram push per successfully tailored job:** role, company, score, listing
 URL, tailored CV PDF attached, inline keyboard `[Mark Applied]` `[Skip]`
@@ -362,8 +362,7 @@ URL, tailored CV PDF attached, inline keyboard `[Mark Applied]` `[Skip]`
   schema and guards → `render(tailored, profile)` → PDF bytes →
   `POST /jobs/{id}/artifacts` → `PATCH /jobs/{id}/status` to
   `PENDING_APPROVAL` → Telegram push with PDF.
-- Tailoring service, Telegram client, and settings injected.
-
+- Tailoring service, Telegram client.
 **Tests:**
 - Mock tailoring service and Telegram client.
 - Inject N+1 SCORED records; assert only N are processed (batch size cap).
@@ -394,7 +393,7 @@ identical, no write occurs (idempotent).
 the next scrape run picks it up.
 
 **Implementation notes:**
-- Load `profile.json`; if missing, log a warning and skip (no profile = no
+- Load `profile.json`; if missing, log a warning (no profile = no
   queries).
 - One LLM call: `llm_generate_queries(profile) -> list[str]`.
 - Write to `search_queries.json`; backup existing to
@@ -407,7 +406,7 @@ the next scrape run picks it up.
 - Assert `search_queries.json` is written with the correct content.
 - Assert backup is created when the file exists and differs.
 - Assert no write occurs when content is identical (idempotency).
-- Assert missing `profile.json` logs a warning without raising.
+- Assert missing `profile.json` logs a warning and raise an error.
 - All file I/O uses `tmp_path`.
 
 **Definition of done:**

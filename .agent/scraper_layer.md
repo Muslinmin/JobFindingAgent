@@ -22,7 +22,7 @@ The scraper layer has four work packages, executed in dependency order:
 ## Project invariants (non-negotiable for all WPs)
 
 1. **No reasoning in adapters.** Query, parse, normalise only. No LLM calls, no scoring, no relevance decisions.
-2. **No DB access, no self-HTTP.** Adapters return `list[JobCreate]`; `ingest_job` (never an HTTP call to `POST /jobs` — that route exists for out-of-process callers only). Dedup happens inside `ingest_job` (fingerprint → repository upsert).
+2. **No DB access, no self-HTTP.** Adapters return `list[JobCreate]`; 
 3. **Fail soft.** Any error → `logger.warning` + return `[]`. An adapter must never crash
 4. **Injectable HTTP client.** Constructor accepts `client: httpx.AsyncClient | None`. No real network in tests except `@pytest.mark.live`.
 5. **Secrets in settings.** All API keys, app IDs, index names, delays, page sizes go in pydantic-settings (`.env`). Never hardcoded.

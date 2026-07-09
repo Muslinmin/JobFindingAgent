@@ -20,23 +20,26 @@ Every write from every component goes through this layer.
 ## 1. Scope Boundary
 
 ### Inside this layer
-- FastAPI app skeleton + lifespan hook **mechanism** (the registration point — not the scheduled jobs themselves).
+- FastAPI app skeleton + lifespan hook **mechanism** (the registration point — not the scheduled jobs themselves). The HTTP surface is now minimal (two thin routes, below); it is no longer the primary interface.
 - Data model: the extended `jobs` table and the new `artifacts` table.
 - Repository layer — the **only** place raw SQL and driver details live (the aiosqlite → asyncpg seam).
-- Pydantic schemas + enums: `JobCreate`, `Job`, `ArtifactCreate`, `Artifact`, `Status`, `ArtifactKind`.
+- Pydantic schemas + enums: `JobCreate`, `Job`, `ArtifactCreate`, `Artifact`, `Status`, `ArtifactKind`, `UserAction`.
 - FSM enforcement — reject illegal transitions before any write.
-- The idempotent upsert flow in `POST /jobs`.
-- Endpoints: `POST /jobs`, `PATCH /jobs/{id}/status`, `GET /jobs`, `POST /jobs/{id}/artifacts`, `POST /jobs/{id}/follow-up`, `POST /chat` (thin).
+- **The service layer is the real interface.** It is an in-process facade — a single object presenting one front door to the validated operations (`ingest_job`, `transition_status`, `register_artifact`, `record_follow_up`, and the read functions). "In-process" means callers run inside the same program and invoke a plain method with no network hop.
+- The facade is constructed once at the composition root (`main.py`) and injected via dependency injection into its callers: the scheduler, the agent's tools, and the tailoring consumer. There is no self-HTTP; in-process callers never call the backend over the network.
+- Exactly **two thin inbound HTTP routes** survive, both for the separate Telegram bot client (a separate device): `POST /chat` (free-form message → agent) and `POST /jobs/{job_id}/action` (a button tap → service facade, deterministic). Every other operation the old CRUD endpoints exposed is now reached in-process through the facade.
 
-### Outside this layer (consumers that write/read *through* it)
-- **Scorer** — a pure function; the backend persists the integer it returns and never computes or recomputes it.
-- **Tailoring service**, **scraper adapters**, **agent reasoning**, **Telegram bot** — all write through the API.
-- **Scheduled job functions** (scheduling layer) — only the lifespan hook *mechanism* lives here.
+
 
 ### Resolved boundary decisions
 - **Fingerprint — external.** Belongs to the dedup layer; the method is unsettled (company + title collisions for large employers). The backend imports it behind a stable signature `fingerprint(job: JobCreate) -> str` and treats it as an injected dependency, so revising the algorithm changes **zero** backend code.
-- **`POST /chat` — thin transport.** The route is backend; the body is the agent. There is exactly one interpreter of user intent (the agent). The handler delegates; it does **not** branch between "send to agent" and "send to backend."
+
 - **FSM — defined in the backend, shared read-only with the agent.** Rule-based. The agent may *read* legality (`can_transition`) to avoid proposing doomed moves, but enforcement is unconditional at the write path. The agent proposes; the backend disposes.
+
+
+- **Two inbound routes, split by ambiguity — not one.** `POST /chat` is thin transport to the agent: the route is backend, the body is the agent, and the agent is the single interpreter of ambiguous user intent. `POST /jobs/{job_id}/action` is the deterministic path for a button tap, which is already unambiguous and so bypasses the agent entirely, calling the service facade directly. This sharpens the invariant rather than muddying it: `/chat` becomes the **only** place an LLM call can originate; `/action` is purely deterministic. Neither handler branches on intent — each has exactly one destination.
+
+- **Outbound push stays off the HTTP surface.** Notifications (job cards, lifecycle nudges) go outbound from the scheduler directly through the notifications bot via the Telegram API. Only the *button reply* those cards generate comes back to the backend, and it arrives through `/jobs/{job_id}/action`. See §3e for the two-bot messaging model.
 
 ---
 
@@ -49,8 +52,9 @@ Every write from every component goes through this layer.
 4. **Record follow-up activity without a state change.** Increment `follow_up_count`, stamp `last_follow_up_at`, leave `status` and `status_changed_at` untouched.
 5. **Register an artifact against a job.**
 6. **Serve the consumers' queries:** status-set filtering (active vs. terminal), age-based selection on `status_changed_at`, and ranked-and-limited selection (top-N `SCORED` by score, then recency, then id).
-7. **Expose one validated write path** to both in-process callers (agent tools, scheduler) and HTTP clients.
-8. **Provide the `/chat` transport endpoint** — thin; delegates to the agent.
+
+
+7. **Provide exactly two thin inbound routes** — `/chat` (delegates to the agent; the only LLM origin) and `/jobs/{job_id}/action` (maps a `UserAction` to an FSM transition; deterministic, no agent). All other operations are in-process facade calls, not endpoints.
 
 ### Non-functional (invariants honored)
 1. Single write path; no consumer writes to the DB directly.
@@ -184,10 +188,13 @@ purpose.
 - **`auto_apply` is decided at the call site, not in the FSM.** Both `TAILORED → PENDING_APPROVAL` and `TAILORED → APPLYING` are legal; config picks which fires.
 - **The FSM is structural only** — it does not encode *who* may trigger a move. Actor-authorization is deliberately omitted for now (single-user; each transition has one natural caller in practice).
 
-### 3c. Upsert Contract (`POST /jobs`)
+### 3c. Upsert Contract 
 
-After Pydantic validation (invalid → 422, no write) the backend computes the
-fingerprint via the external function, then takes one of two paths.
+The `ingest_job` facade method owns this contract. It is called in-process by the
+scraper and has no HTTP route of its own. It first validates the incoming
+`JobCreate` (invalid input raises a Pydantic `ValidationError` and writes nothing),
+then computes the fingerprint via the injected fingerprint function, then takes one
+of two paths.
 
 **Fresh hit (no row with this fingerprint) → INSERT:**
 - From `JobCreate`: `company`, `title`, `description`, `url`, `posted_at?`, `metadata?`.
@@ -208,7 +215,7 @@ fingerprint via the external function, then takes one of two paths.
 > in this state." Separate columns, separate purposes. Same bug-class as the
 > follow-up/ghost separation.
 
-**Atomic implementation** — one statement, no read-then-write race (also the seam where the future single-writer serialization lands):
+**Atomic implementation** (the statement lives in `repository.py`, the only place SQL sits) — one statement, no read-then-write race (also the seam where the future single-writer serialization lands):
 
 ```sql
 INSERT INTO jobs (...) VALUES (...)
@@ -225,67 +232,153 @@ status — repeated calls never alter `status`, `score`, content, or
 
 **Boundary reaffirm:** the upsert never scores. It always lands on `DISCOVERED`
 with `score = NULL`. Scoring is the next step, run by the scrape job, which reads
-`DISCOVERED` rows and transitions them via the status endpoint.
+`DISCOVERED` rows and transitions them in-process via `transition_status`.
 
-### 3d. API Endpoints
+### 3d. Operations (service facade) & Inbound Routes
 
-**Conventions:** `200` success, `422` invalid body, `404` job not found,
-`409` conflict (illegal transition, or operation invalid for current state).
-A `Job` in any response is the full row; an `Artifact` is the full artifacts row.
+The operations below are **service-facade methods**, not HTTP endpoints. In-process
+callers (scheduler, agent tools, tailoring consumer) invoke them directly through
+the injected facade. Only two of them are additionally reachable over HTTP, and
+only because the Telegram bot is a separate client on another device (`/chat` and
+`/jobs/{job_id}/action`, at the end of this section). Everything else is
+in-process only.
 
-**`POST /jobs` — ingest (upsert)**
+**Conventions (facade + routes):** methods return the full `Job` or `Artifact`
+object, or raise. When surfaced over the two HTTP routes, the mapping is `200`
+success, `422` invalid body / out-of-vocabulary action, `404` job not found, `409`
+conflict (illegal transition, or operation invalid for current state). The same
+error classes are raised by the facade for in-process callers; HTTP status codes
+are just how the routes render them.
+
+**`ingest_job(JobCreate) -> Job` — ingest (upsert)**
 - In: `JobCreate { company, title, description, url, posted_at?, metadata? }`. Caller never supplies `status`, `score`, `fingerprint`, timestamps, or counters.
 - Out: `Job`. (No `was_created` flag — the returned row's `seen_count` already encodes it: `1` = created this call, `>1` = duplicate hit.)
-- Does: the 3c upsert. Always `DISCOVERED`. Never scores.
+- Does: the 3c upsert. Always `DISCOVERED`. Never scores. Called in-process by the scraper.
 
-**`PATCH /jobs/{id}/status` — transition (the FSM enforcement point)**
-- In: `{ to_status: Status }`.
+**`transition_status(job_id, to_status: Status) -> Job` — transition (the FSM enforcement point)**
+- In: `job_id`, `to_status`.
 - Out: updated `Job`.
-- Does: load job → `validate_transition(current, to_status)` → if legal, set status, stamp `status_changed_at = now`, `updated_at = now`; illegal → `409`. Self-loop `INTERVIEWING→INTERVIEWING` allowed (re-stamps clock). Every status change converges here.
+- Does: load job → `validate_transition(current, to_status)` → if legal, set status, stamp `status_changed_at = now`, `updated_at = now`; illegal → raises `InvalidTransitionError` (`409` at a route). Self-loop `INTERVIEWING→INTERVIEWING` allowed (re-stamps clock). **Every** status change converges here — the auto transitions the scheduler drives, the tailoring transitions, and the user button taps arriving via `/action`.
 
-**`GET /jobs` — query (general read; thin shell for external callers)**
+**`query_jobs(status_set, limit, offset) -> list[Job]` — general read**
 - In: `status` (set; **default = active pipeline**, terminal only on explicit request), `limit`, `offset`.
 - Out: `list[Job]`.
-- Thin wrapper over the general repository read function. The agent and scheduler call repository functions in-process; this endpoint exists for out-of-process callers (external scripts, debugging, future frontend). Not load-bearing in Phase 1.
+- Does: thin wrapper over the general repository read function. Backs the agent's `query_jobs` tool in-process. No HTTP endpoint — the agent calls the tool, the tool calls this method, all in-process. (See Read surfaces, Decision C.)
 
-**`POST /jobs/{id}/artifacts` — register artifact**
+**`register_artifact(job_id, ArtifactCreate) -> Artifact` — register artifact**
 - In: `ArtifactCreate { kind, path }`.
 - Out: `Artifact`.
-- Does: 404 if no job; else always *insert* a new row (keep-all), `created_at = now`. **Does not change status** (Decision A).
+- Does: 404 if no job; else always *insert* a new row (keep-all), `created_at = now`. **Does not change status** (Decision A). Called in-process by the tailoring consumer.
 
-**`POST /jobs/{id}/follow-up` — record follow-up (two-clocks made physical)**
-- In: none (optional `{ note? }`).
+**`record_follow_up(job_id, note?) -> Job` — record follow-up (two-clocks made physical)**
+- In: `job_id`, optional `note`.
 - Out: updated `Job`.
 - Does: increment `follow_up_count`, stamp `last_follow_up_at = now`, `updated_at = now`. **Cannot** touch `status` or `status_changed_at`. Requires `status == APPLIED`, else `409` (Decision B).
+
+---
+
+**Inbound HTTP routes (exactly two — the Telegram bot client's only doors in):**
 
 **`POST /chat` — agent transport (thin)**
 - In: `{ message, ...context }`.
 - Out: `{ reply, ... }`.
-- Does: hand to the agent, return its reply. Backend owns the route; the agent owns the body. Stateless per call.
+- Does: hand to the agent, return its reply. Backend owns the route; the agent owns the body. Stateless per call — each call keeps nothing in memory from the previous one, which is why the agent rebuilds context from the conversation store (see §3f). The **only** place an LLM call originates.
+
+**`POST /jobs/{job_id}/action` — button tap (deterministic; mirror of `/chat`)**
+- In: `{ action: UserAction }`.
+- Out: updated `Job`.
+- Does: the thin handler calls `transition_status` after mapping the action to a target status. It is deterministic — no agent, no LLM. An out-of-vocabulary action fails at parsing (`422`); an illegal or out-of-state tap fails FSM validation (`409`). This is the structured counterpart to `/chat`: a button press is already unambiguous, so it bypasses the single interpreter.
+
+**`UserAction` — the button vocabulary (lives in `enums.py`).** A **restricted**
+enum whose member string values match `Status` names exactly, but containing only
+the states a user button may legitimately target. This is deliberately narrower
+than `Status`: a tap can never request a system-only state such as `SCORED` or
+`TAILORED` (those are automatic transitions the scheduler drives, never a button),
+because those names are simply not in the enum, so they fail at `422` before any
+lookup. The enum names a *target state*, not an *edge* — the button says "this job
+is now `INTERVIEWING`," and the backend reads current status and validates the
+`(current → target)` pair against the FSM. One target can cover several legal
+source edges (`INTERVIEWING` covers advance-from-`APPLIED`, the next-round
+self-loop, and resurrection-from-`GHOSTED`), all resolved server-side. The button
+stays dumb; the FSM stays entirely in the backend.
+
+Phase 1 vocabulary (from the `user`-triggered rows of the 3b transition table):
+`APPLIED`, `USER_SKIPPED`, `INTERVIEWING`, `OFFER`, `ACCEPTED`, `DECLINED`,
+`REJECTED`. Phase 2 adds `APPLYING` and the `APPLY_FAILED`-sourced actions
+(deferred; the enum has a documented place to grow).
 
 **Decision A — artifact registration is decoupled from the status move.**
-`POST .../artifacts` only registers. The tailoring service then calls
-`PATCH .../status` separately (`SCORED → TAILORED → PENDING_APPROVAL`, or
-`→ APPLYING` under `auto_apply`). One endpoint, one responsibility — and it keeps
+`register_artifact` only registers. The tailoring consumer then calls
+`transition_status` separately (`SCORED → TAILORED → PENDING_APPROVAL`, or
+`→ APPLYING` under `auto_apply`). One method, one responsibility — and it keeps
 on-demand re-tailoring safe: regenerating a CV for an already-`APPLIED` job
 registers a fresh artifact without attempting an illegal transition. Tailoring
 sequence: query top-N `SCORED` → LLM selects (validated JSON) → deterministic
-render to PDF on disk → `POST .../artifacts` → `PATCH .../status` → Telegram push.
+render to PDF on disk → `register_artifact` → `transition_status` → notifications-bot push.
 
-**Decision B — `follow-up` requires `status == APPLIED`.** A follow-up only has
-meaning while awaiting a response after applying. The server-side precondition
+**Decision B — `record_follow_up` requires `status == APPLIED`.** A follow-up only
+has meaning while awaiting a response after applying. The server-side precondition
 guards against a race (job rejected/ghosted between the daily check and the
-action) and keeps the endpoint consistent with "the backend validates."
+action) and keeps the operation consistent with "the backend validates."
 
 ### Read surfaces (Decision C)
 
 Every DB read is a repository function (the only place SQL lives). Two shapes:
-- **General-purpose:** "list jobs by status, paginated." Backs the agent's `query_jobs` tool (in-process) and the thin HTTP `GET /jobs` (for out-of-process callers).
+- **General-purpose:** "list jobs by status, paginated." Backs the agent's `query_jobs` tool, called in-process through the `query_jobs` facade method. There is no public HTTP read endpoint — the old `GET /jobs` is removed along with the rest of the CRUD surface.
 - **Specific, rule-bound, named functions:** top-N `SCORED` for tailoring; `PENDING_APPROVAL` older than expiry; `APPLIED`/`INTERVIEWING` older than ghost window; `APPLIED` older than follow-up window with `follow_up_count = 0`. Called in-process by the scheduled jobs; each has a precise typed signature and is unit-tested directly.
 
 Decision: do **not** build one over-configurable query for both. General stays
 general; each pipeline-critical query is its own named function. The LLM never
 calls HTTP — it calls a tool that calls the general function in-process.
+
+### 3e. Messaging Model (two bots)
+
+Telegram interaction is split across **two separate bots**, each with its own
+token (the secret string that authenticates a program as a particular bot). The
+split is by **interaction mode, not by direction** — each bot handles both
+directions of its own mode.
+
+- **Chat bot — free-form conversation.** Inbound user messages go to `POST /chat`,
+  which forwards them to the agent; the agent's reply is relayed back to the user.
+  This bot holds no notification logic. Pure transport and routing.
+- **Notifications bot — the job-card lifecycle.** The scheduler pushes job cards
+  (approve/skip prompts) and lifecycle nudges (pending-approval expiries, ghost
+  warnings) **outbound** through this bot via the Telegram API. Each card carries
+  inline buttons; when the user taps one, the resulting button reply comes **back**
+  to the backend through `POST /jobs/{job_id}/action`.
+
+Two consequences worth stating plainly, because they are what this split buys:
+- **The outbound push is the one thing that does not go through a backend HTTP
+  route.** The scheduler is fire-and-forget: it sends the card and is done. Only
+  the button *reply* returns, and it returns via `/action`. The scheduler never
+  waits for or hears about that reply.
+- **No push-coexistence machinery exists.** Because notifications and conversation
+  live on two separate streams, a push can never interrupt a conversation. The
+  "is the user mid-conversation, hold or deliver?" gate, any `last_activity_at`
+  signal read by the scheduler, and any held-push queue are **deleted, not
+  deferred**. The scheduler and the conversation store have zero contact.
+
+> **Open (transport detail, does not block this spec):** whether the bot client
+> polls Telegram for updates and forwards button taps to `/action`, or the
+> notifications bot uses a webhook that delivers taps straight to the backend. The
+> polling-and-forward shape keeps the bot as the single Telegram-facing client,
+> which fits "the bot is a separate client" more cleanly. Settle in the Telegram
+> layer spec.
+
+### 3f. Conversation Store (second database — reference)
+
+The agent's multi-turn memory lives in a **second SQLite database file**, separate
+from the jobs database, with its own repository, in a dedicated `conversation/`
+package. It is injected into the **agent alone**; the backend's jobs service and
+the scheduler hold no reference to it. It exists because `/chat` is stateless per
+call, so the persisted transcript is what carries context from one message to the
+next.
+
+This is **not specified here.** Its data model (a `sessions` table plus per-session
+JSON Lines transcript files), file responsibilities, and method signatures are the
+source-of-truth of **`conversation_store_v2.md`**. The only facts this backend spec
+records are the two above: it is a second database file distinct from the jobs
+database, and it is not a caller of, nor called by, the jobs service.
 
 ---
 
@@ -305,7 +398,7 @@ app/
 ├── config.py                # DB path + pragmas
 ├── models/
 │   ├── __init__.py
-│   ├── enums.py             # ApplicationStatus, ArtifactKind, state machine     (WP-B)
+│   ├── enums.py             # ApplicationStatus, ArtifactKind, UserAction, FSM   (WP-B)
 │   └── job.py               # JobCreate, StatusUpdate, JobResponse, Artifact*    (WP-A)
 ├── db/
 │   ├── __init__.py
@@ -316,7 +409,7 @@ app/
 │   └── service.py           # validated ops: ingest_job, transition_status, …    (WP-D)
 └── routers/
     ├── __init__.py
-    └── routes.py            # FastAPI endpoints + /chat forwarder                (WP-E)
+    └── routes.py            # two thin routes only: /chat + /jobs/{id}/action    (WP-E)
 
 tests/
 ├── __init__.py
@@ -330,12 +423,12 @@ tests/
 ```
 
 ### File set
-- `enums.py` (extend) — the root of the dependency graph. Holds `ApplicationStatus`, `ArtifactKind`, **and** the state machine (`VALID_TRANSITIONS`, `transition`, `can_transition`, `legal_targets`, `InvalidTransitionError`). Both `job.py` and the service layer import it.
+- `enums.py` (extend) — the root of the dependency graph. Holds `ApplicationStatus`, `ArtifactKind`, `UserAction` (the restricted button-vocabulary enum whose values match a subset of `ApplicationStatus` names), **and** the state machine (`VALID_TRANSITIONS`, `transition`, `can_transition`, `legal_targets`, `InvalidTransitionError`). Both `job.py` and the service layer import it.
 - `job.py` (extend) — Pydantic I/O models: `JobCreate`, `StatusUpdate`, `JobResponse`, `ArtifactCreate`, `ArtifactResponse` (enums imported from `enums.py`).
 - `database.py` (extend) — connection handling, startup pragmas (`foreign_keys = ON`; WAL noted for 0.7.0), DDL for the extended `jobs` table, the `artifacts` table, and the unique `fingerprint` index.
 - `repository.py` (extend) — all SQL: upsert, status write, artifact insert, follow-up update, general list query, named scheduler queries.
-- `service.py` (new) — shared validated operations both routes and in-process callers invoke.
-- `routes.py` (extend) — FastAPI endpoints (thin over the service) + the thin `/chat` forwarder.
+- `service.py` (new) — the injected facade of shared validated operations that both the two routes and all in-process callers invoke.
+- `routes.py` (extend) — exactly two thin routes: `/chat` (→ agent) and `/jobs/{job_id}/action` (→ `transition_status` via the facade, after mapping `UserAction` → target status). No CRUD endpoints.
 - `main.py` (extend) — app creation, router includes, lifespan DB-init.
 - `config.py` (minor) — DB path + pragmas. Pipeline thresholds belong to consumer layers.
 
@@ -347,9 +440,9 @@ tests/
 
 **WP-C — Repository.** Realizes 3c persistence + the named reads (`repository.py`). Atomic `ON CONFLICT` upsert, status write, artifact insert, follow-up update, general list query, scheduler queries. Unit-tested against a temp SQLite seeded with known rows: upsert inserts-then-bumps `seen_count`; follow-up update leaves `status_changed_at` untouched; each scheduler query returns the right subset/order. Fingerprint injected and mocked. Depends on WP-A.
 
-**WP-D — Service layer.** Realizes 3c/3d orchestration (`service.py`): `ingest_job` (fingerprint via injected fn → repository upsert), `transition_status` (read current → FSM validate → write), `register_artifact`, `record_follow_up`. The single validated path on which HTTP routes, agent tools, and scheduler converge. Unit-tested by mocking the repository + fingerprint and asserting call order + that an illegal transition is refused before any write. Depends on WP-B and WP-C.
+**WP-D — Service facade.** Realizes 3d orchestration (`service.py`): `ingest_job` (fingerprint via injected fn → repository upsert), `transition_status` (read current → FSM validate → write), `query_jobs`, `register_artifact`, `record_follow_up`. This is the injected in-process facade on which the two routes, the agent tools, the scheduler, and the tailoring consumer all converge — there is no self-HTTP. Unit-tested by mocking the repository + fingerprint and asserting call order + that an illegal transition is refused before any write. Depends on WP-B and WP-C.
 
-**WP-E — API routes.** Realizes the HTTP surface of 3d (`routes.py`): thin wrappers over service operations + the `/chat` forwarder. Integration-tested with httpx over a temp DB: status-code conventions; illegal transition surfaces as 409. Depends on WP-D.
+**WP-E — Inbound routes.** Realizes the two thin routes of 3d (`routes.py`): `/chat` (forwards to the agent) and `/jobs/{job_id}/action` (parses `UserAction`, maps it to a target status, calls `transition_status`). Deliverable includes the exception handlers that render facade errors as status codes — `InvalidTransitionError → 409`, job-not-found → 404 (an out-of-vocabulary action already yields `422` from Pydantic parsing, so it needs no handler); without them an illegal tap escapes as an unhandled `500`. Tested with three mock-facade mapping tests (409 / 422 / 404, no database) plus one real-database happy-path test (a legal `INTERVIEWING` tap returns `200` with the updated `Job`) that proves the whole path wires together. `/chat` is tested with a mocked agent, asserting only the forwarding contract. Depends on WP-D.
 
 **WP-F — App wiring.** App skeleton in `main.py`: create app, include routers, lifespan DB-init (scheduler registration sits in the hook, but the jobs themselves are the scheduling layer — only the mechanism is here). Startup integration test: boot the app, confirm schema created and routes respond. Depends on WP-E.
 
@@ -444,24 +537,52 @@ async def test_ingest_computes_fingerprint_then_upserts(service, mock_repository
     mock_repository.upsert_job.assert_called_once()
 ```
 
-**WP-E — Routes** (integration, httpx, temp DB):
+**WP-E — Routes** (httpx). The FSM's own rules are already exhaustively covered in
+WP-B and refuse-before-write in WP-D, so WP-E does not re-test them — it verifies
+the *route-to-status mapping* and, in one case, that the whole path wires together.
+Two groups:
+
+*Mapping tests — mock the facade, no database.* Mock `transition_status` to raise,
+and assert the route renders the right status code. These cover the three mappings:
 ```python
-async def test_patch_illegal_status_returns_409(client, applied_job):
-    r = await client.patch(f"/jobs/{applied_job.id}/status",
-                           json={"to_status": "OFFER"})
+async def test_action_illegal_maps_to_409(client, mock_service):
+    mock_service.transition_status.side_effect = InvalidTransitionError(...)
+    r = await client.post("/jobs/any-id/action", json={"action": "OFFER"})
     assert r.status_code == 409
 
-async def test_follow_up_on_non_applied_returns_409(client, scored_job):
-    r = await client.post(f"/jobs/{scored_job.id}/follow-up")
-    assert r.status_code == 409
+async def test_action_out_of_vocabulary_returns_422(client):
+    r = await client.post("/jobs/any-id/action", json={"action": "SCORED"})
+    assert r.status_code == 422        # Pydantic rejects before the handler runs
+
+async def test_action_not_found_maps_to_404(client, mock_service):
+    mock_service.transition_status.side_effect = JobNotFoundError(...)
+    r = await client.post("/jobs/unknown/action", json={"action": "INTERVIEWING"})
+    assert r.status_code == 404
 ```
 
-**WP-F — App wiring** (startup integration). Boot the app through the lifespan
-hook, confirm the schema exists and `GET /jobs` answers `200`.
+*Wiring test — real app over a temp DB.* One happy-path test proves the route
+genuinely reaches the facade, a real `APPLIED` job is loaded, the real FSM permits
+the move, and the updated row is serialized back — the class of bug the mocked
+tests cannot catch (route silently not calling the facade, facade not injected):
+```python
+async def test_action_legal_transitions_and_returns_job(client, applied_job):
+    r = await client.post(f"/jobs/{applied_job.id}/action",
+                          json={"action": "INTERVIEWING"})
+    assert r.status_code == 200 and r.json()["status"] == "INTERVIEWING"
+```
 
-**E2E (minimal, ~5%):** one thin slice — `POST /jobs`, then `PATCH` through a
-legal sequence, then `GET` it back. Fuller cross-layer E2E belongs at the
-overview level, not here.
+The `/chat` route is tested with a **mocked agent**, asserting only the forwarding
+contract (message passed through, agent's reply returned) — never a real LLM call
+inside a route test.
+
+**WP-F — App wiring** (startup integration). Boot the app through the lifespan
+hook, confirm the schema exists and the two routes are mounted (`/chat` and
+`/jobs/{id}/action` respond rather than 404).
+
+**E2E (minimal, ~5%):** one thin slice — `ingest_job` in-process, then a legal
+`/action` sequence over HTTP, then read the row back via `query_jobs`. Reuses the
+same real-app-over-temp-DB fixtures as the WP-E wiring test. Fuller cross-layer E2E
+belongs at the overview level, not here.
 
 ---
 
@@ -473,10 +594,16 @@ overview level, not here.
 4. The two-clocks rule is physical: follow-up writes cannot move `status_changed_at`; re-sightings cannot move it either.
 5. Repository pattern isolation — a DB-driver switch touches only `repository.py` / `database.py`.
 6. Timestamps are ISO-8601 UTC everywhere.
+7. The service facade is the real interface; in-process callers invoke it directly through dependency injection and never call the backend over HTTP.
+8. Exactly two inbound HTTP routes exist. `/chat` is the single origin of any LLM call; `/jobs/{job_id}/action` is deterministic and never invokes the agent. No CRUD endpoints are exposed.
+9. `UserAction` is strictly narrower than `Status`: a button tap can only ever target a user-legal state, and can never request a system-only state (e.g. `SCORED`, `TAILORED`).
+10. Outbound notifications leave via the notifications bot directly, off the HTTP surface; only the button reply returns, through `/action`. No push-coexistence gate, activity signal, or held-push queue exists — the scheduler and the conversation store never touch.
 
 ---
 
 ## 7. Deferred / Open
 
 - **SQLite single-writer constraint** — named, not solved. One writer at a time across the whole file; concurrent writes (scrape burst vs. a user-triggered tool call) yield `SQLITE_BUSY`. Invisible at dev scale. Mitigations (0.7.0 reliability): WAL mode, `busy_timeout`, short write transactions, optionally a single writer connection/queue. The single validated write path pre-positions this fix to one place.
+- **Button-tap transport** — whether the Telegram bot client polls and forwards taps to `/action`, or the notifications bot uses a webhook straight to the backend. Settled in the Telegram layer spec (see §3e).
+- **Conversation store** — the second SQLite database and `conversation/` package are referenced here (§3f) but specified in `conversation_store_v2.md`.
 - **v1 file layout reconciliation** — confirm actual filenames/structure against §4.
