@@ -51,7 +51,7 @@ Every write from every component goes through this layer.
 3. **Transition status under FSM rule.** Move a record only if the transition is legal; reject illegal ones before any write; stamp `status_changed_at` on every legal transition.
 4. **Record follow-up activity without a state change.** Increment `follow_up_count`, stamp `last_follow_up_at`, leave `status` and `status_changed_at` untouched.
 5. **Register an artifact against a job.**
-6. **Serve the consumers' queries:** status-set filtering (active vs. terminal), age-based selection on `status_changed_at`, and ranked-and-limited selection (top-N `SCORED` by score, then recency, then id).
+6. **Serve the consumers' queries:** status-set filtering (active vs. terminal), age-based selection on `status_changed_at`, and ranked-and-limited selection — `top_scored_for_tailoring`, returning `SCORED` jobs by score, then recency, then id.
 
 
 7. **Provide exactly two thin inbound routes** — `/chat` (delegates to the agent; the only LLM origin) and `/jobs/{job_id}/action` (maps a `UserAction` to an FSM transition; deterministic, no agent). All other operations are in-process facade calls, not endpoints.
@@ -265,6 +265,11 @@ are just how the routes render them.
 - Out: `list[Job]`.
 - Does: thin wrapper over the general repository read function. Backs the agent's `query_jobs` tool in-process. No HTTP endpoint — the agent calls the tool, the tool calls this method, all in-process. (See Read surfaces, Decision C.)
 
+**`top_scored_for_tailoring(limit) -> list[Job]` — ranked read for tailoring**
+- In: `limit` (the daily tailoring batch size; the value itself belongs to the tailoring consumer's config, not here).
+- Out: `list[Job]` — only `SCORED` rows, ordered by `score` **descending**, then recency, then `id`. This exact tiebreak chain is the priority order the tailoring consumer processes in.
+- Does: thin wrapper over the **one** named repository ranking read whose `ORDER BY` owns that deterministic ordering — a single named place, so the priority rule is never re-expressed anywhere else. Called in-process by the tailoring consumer. No HTTP endpoint. This is the tailoring entry of the specific, rule-bound named reads (see Read surfaces, Decision C). Pure read — it never scores and never transitions; the consumer reads this list, tailors each job, then calls `register_artifact` and `transition_status` per job.
+
 **`register_artifact(job_id, ArtifactCreate) -> Artifact` — register artifact**
 - In: `ArtifactCreate { kind, path }`.
 - Out: `Artifact`.
@@ -313,7 +318,7 @@ Phase 1 vocabulary (from the `user`-triggered rows of the 3b transition table):
 `→ APPLYING` under `auto_apply`). One method, one responsibility — and it keeps
 on-demand re-tailoring safe: regenerating a CV for an already-`APPLIED` job
 registers a fresh artifact without attempting an illegal transition. Tailoring
-sequence: query top-N `SCORED` → LLM selects (validated JSON) → deterministic
+sequence: `top_scored_for_tailoring(limit)` → LLM selects (validated JSON) → deterministic
 render to PDF on disk → `register_artifact` → `transition_status` → notifications-bot push.
 
 **Decision B — `record_follow_up` requires `status == APPLIED`.** A follow-up only
@@ -325,7 +330,7 @@ action) and keeps the operation consistent with "the backend validates."
 
 Every DB read is a repository function (the only place SQL lives). Two shapes:
 - **General-purpose:** "list jobs by status, paginated." Backs the agent's `query_jobs` tool, called in-process through the `query_jobs` facade method. There is no public HTTP read endpoint — the old `GET /jobs` is removed along with the rest of the CRUD surface.
-- **Specific, rule-bound, named functions:** top-N `SCORED` for tailoring; `PENDING_APPROVAL` older than expiry; `APPLIED`/`INTERVIEWING` older than ghost window; `APPLIED` older than follow-up window with `follow_up_count = 0`. Called in-process by the scheduled jobs; each has a precise typed signature and is unit-tested directly.
+- **Specific, rule-bound, named functions:** `top_scored_for_tailoring` (top-N `SCORED`, ordered by score → recency → id, surfaced on the facade for the tailoring consumer); `PENDING_APPROVAL` older than expiry; `APPLIED`/`INTERVIEWING` older than ghost window; `APPLIED` older than follow-up window with `follow_up_count = 0`. Called in-process by the scheduled jobs and the tailoring consumer; each has a precise typed signature and is unit-tested directly.
 
 Decision: do **not** build one over-configurable query for both. General stays
 general; each pipeline-critical query is its own named function. The LLM never
@@ -438,9 +443,9 @@ tests/
 
 **WP-B — FSM.** Realizes 3b (the state-machine portion of `enums.py`). Pure logic, zero I/O — the cleanest unit. Unit-tested: every legal edge passes, every illegal edge rejected, `INTERVIEWING` self-loop allowed, terminal states have no exits. Built alongside the enums.
 
-**WP-C — Repository.** Realizes 3c persistence + the named reads (`repository.py`). Atomic `ON CONFLICT` upsert, status write, artifact insert, follow-up update, general list query, scheduler queries. Unit-tested against a temp SQLite seeded with known rows: upsert inserts-then-bumps `seen_count`; follow-up update leaves `status_changed_at` untouched; each scheduler query returns the right subset/order. Fingerprint injected and mocked. Depends on WP-A.
+**WP-C — Repository.** Realizes 3c persistence + the named reads (`repository.py`). Atomic `ON CONFLICT` upsert, status write, artifact insert, follow-up update, general list query, the `top_scored_for_tailoring` ranking read, and the scheduler window queries. Unit-tested against a temp SQLite seeded with known rows: upsert inserts-then-bumps `seen_count`; follow-up update leaves `status_changed_at` untouched; the ranking read returns only `SCORED` rows in score → recency → id order; each scheduler query returns the right subset/order. Fingerprint injected and mocked. Depends on WP-A.
 
-**WP-D — Service facade.** Realizes 3d orchestration (`service.py`): `ingest_job` (fingerprint via injected fn → repository upsert), `transition_status` (read current → FSM validate → write), `query_jobs`, `register_artifact`, `record_follow_up`. This is the injected in-process facade on which the two routes, the agent tools, the scheduler, and the tailoring consumer all converge — there is no self-HTTP. Unit-tested by mocking the repository + fingerprint and asserting call order + that an illegal transition is refused before any write. Depends on WP-B and WP-C.
+**WP-D — Service facade.** Realizes 3d orchestration (`service.py`): `ingest_job` (fingerprint via injected fn → repository upsert), `transition_status` (read current → FSM validate → write), `query_jobs`, `top_scored_for_tailoring` (thin wrapper over the ranking read), `register_artifact`, `record_follow_up`. This is the injected in-process facade on which the two routes, the agent tools, the scheduler, and the tailoring consumer all converge — there is no self-HTTP. Unit-tested by mocking the repository + fingerprint and asserting call order + that an illegal transition is refused before any write. Depends on WP-B and WP-C.
 
 **WP-E — Inbound routes.** Realizes the two thin routes of 3d (`routes.py`): `/chat` (forwards to the agent) and `/jobs/{job_id}/action` (parses `UserAction`, maps it to a target status, calls `transition_status`). Deliverable includes the exception handlers that render facade errors as status codes — `InvalidTransitionError → 409`, job-not-found → 404 (an out-of-vocabulary action already yields `422` from Pydantic parsing, so it needs no handler); without them an illegal tap escapes as an unhandled `500`. Tested with three mock-facade mapping tests (409 / 422 / 404, no database) plus one real-database happy-path test (a legal `INTERVIEWING` tap returns `200` with the updated `Job`) that proves the whole path wires together. `/chat` is tested with a mocked agent, asserting only the forwarding contract. Depends on WP-D.
 
@@ -520,8 +525,9 @@ async def test_follow_up_leaves_status_clock_untouched(repo, applied_job):
     assert row.follow_up_count == 1 and row.last_follow_up_at == t2
     assert row.status_changed_at == applied_job.status_changed_at
 ```
-Plus one test per named scheduler query (tailoring select ordering; ghost/expiry
-threshold boundary).
+Plus one test per named read: `top_scored_for_tailoring` ordering (only `SCORED`
+rows, score → recency → id, respects `limit`) and each scheduler window query's
+ghost/expiry threshold boundary.
 
 **WP-D — Service** (mock repository + fingerprint). Load-bearing test: no write
 on an illegal transition:
