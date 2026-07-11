@@ -8,16 +8,18 @@
 |---|---|---|
 | Discovery | Tavily search API (search-result URLs, weak JDs) | Per-portal scraper adapters (real listing URLs, full JDs) |
 | Candidate data | `profile.json` shaped via chat | Canonical structured profile parsed once from CV; profile drives queries, scoring, and tailoring |
-| Scoring | Keyword overlap vs static config keywords | Profile-derived keywords → embedding similarity (upgrade path) |
+| Scoring | Keyword overlap vs static config keywords | Embedding cosine similarity (JD vs profile vector), from the start |
 | Output | Job records in DB, queried on demand | Tailored CV PDF per job, pushed via Telegram |
 | Autonomy | None | Phase 1: autonomous scrape + tailor. Phase 2: autonomous apply behind approval gate |
-| Frontend | Telegram bot (pure transport) | Telegram bot (transport + approval gate + artifact delivery) |
+| Frontend | Telegram bot (pure transport) | Two Telegram bots (chat + notifications), still pure transport |
+| Write path | HTTP endpoints | In-process `JobService` facade; only three thin HTTP routes survive |
 
 Unchanged: FastAPI backend, repository pattern, SHA-256 fingerprint dedup
 (mechanism kept; fingerprint *inputs* change — see § Deduplication),
 LiteLLM ReAct agent, stateless `POST /chat`, APScheduler in lifespan hook,
 TDD discipline, "scraper is dumb / reasoning lives in the agent /
-all writes go through the backend API".
+all writes go through the backend's single validated path" (now the
+in-process service facade, not HTTP endpoints).
 
 ---
 
@@ -57,7 +59,7 @@ APPLIED ──► INTERVIEWING ──► OFFER ──► ACCEPTED
 - Full autonomy = `auto_apply: true` per source → `TAILORED` skips straight to `APPLYING`.
 - Post-application transitions come from the user in natural language
   ("got an interview with PUB", "rejection email from GovTech") — the agent
-  resolves the record via `query_jobs`, then calls `update_status`.
+  resolves the record via `find_jobs`, then calls `update_status`.
   `INTERVIEWING → INTERVIEWING` is legal (multiple rounds).
 - **The two clocks are different — this matters.** Time rules key off
   `status_changed_at` (when the record entered its current status), NOT
@@ -86,9 +88,14 @@ APPLIED ──► INTERVIEWING ──► OFFER ──► ACCEPTED
   (optional day 14 second nudge) → day 35 ghosted. Any real movement
   (interview, rejection) resets `status_changed_at` and the ladder restarts
   where relevant.
-- `query_jobs` defaults to the active pipeline (excludes `GHOSTED`,
-  `REJECTED`, `USER_SKIPPED`, `EXPIRED`); terminal states remain queryable
-  explicitly ("show me everything that ghosted me").
+- `find_jobs` (the agent's single read tool) defaults its status filter by
+  call shape: a **bare listing** (no title, no company — "what am I working
+  on") defaults to the active pipeline and excludes terminal states
+  (`GHOSTED`, `REJECTED`, `USER_SKIPPED`, `EXPIRED`), whereas a **named
+  lookup** (a title and/or company was given) searches **all** statuses,
+  since you may be recalling a job that has since been rejected or declined.
+  Either default can be overridden with an explicit `status_set`
+  ("show me everything that ghosted me").
 
 State transitions are enforced at the model layer (same FSM pattern as v1 status
 transitions). Illegal transitions (e.g. `REJECTED → OFFER`) are rejected before
@@ -107,40 +114,43 @@ any DB write.
                                  │ read by services
         ── TWO TRIGGERS — they never call each other ──
                                  │
-┌───────────────┐                │                ┌───────────────────┐
-│ APScheduler   │                │                │ Telegram Bot (thin)│
-│ (lifespan)    │                │                │ free-text ─► /chat │
-│ clock; picks  │                │                │ buttons   ─► Backend│
-│ which records │                │                │ renders only,      │
-│ scrape·tailor │                │                │ no logic/history   │
-│ follow-up·    │                │                └─────────┬─────────┘
-│ lifecycle·    │                │              free-text only│ POST /chat
-│ digest·flush  │                │                           ▼
-└───────┬───────┘                │                ┌───────────────────┐
-        │ drives services        │                │ Agent — ReAct loop │
-        │ directly               │                │ reference resolution│
-        │                        │                │ ConversationContext │
-        │                        │                │ thin tool bindings  │
-        │                        │                └─────────┬─────────┘
-        │                        │       tool handlers call │ the SAME
-        │                        │       services            │
-        ▼                        ▼                           ▼
+┌───────────────┐                │            ┌───────────────────────┐
+│ APScheduler   │                │            │ TWO Telegram bots (thin)│
+│ (lifespan)    │                │            │ chat bot  ─► POST /chat │
+│ clock; picks  │                │            │ notif bot ─► /action,   │
+│ which records │                │            │             /follow-up  │
+│ scrape·tailor │                │            │ separate channels →     │
+│ follow-up·    │                │            │ no push-coexistence     │
+│ lifecycle·    │                │            └───────────┬─────────────┘
+│ digest        │                │           free-text only│ POST /chat
+└───────┬───────┘                │                         ▼
+        │ drives services        │            ┌───────────────────────┐
+        │ directly               │            │ Agent — ReAct loop     │
+        │                        │            │ reference resolution   │
+        │                        │            │ owns conversation store│
+        │                        │            │ (separate SQLite +     │
+        │                        │            │  JSONL transcripts)    │
+        │                        │            │ thin tool bindings     │
+        │                        │            └───────────┬───────────┘
+        │                        │  tool handlers call the │ SAME services
+        │                        │  (in-process, no HTTP)  │
+        ▼                        ▼                         ▼
 ┌──────────────────────────────────────────────────────────────────┐
-│ Shared Services — caller-agnostic; THE WORK LIVES HERE             │
+│ Shared Services (JobService facade) — caller-agnostic; WORK HERE   │
 │ scrape/ingest · score · tailor · follow-up draft · query regen ·   │
 │ status transition       (only tailor / draft / regen call the LLM) │
 └──────┬───────────────────────┬───────────────────────┬────────────┘
-       │ writes                │ LLM call              │ fetch
+       │ writes                │ LLM / embed           │ fetch
        ▼                       ▼                       ▼
 ┌──────────────────┐  ┌──────────────────────┐  ┌──────────────────┐
-│ Backend API +    │  │ LLM (leaf dependency) │  │ Scraper adapters │
+│ Backend +        │  │ LLM (leaf dependency) │  │ Scraper adapters │
 │ repository       │  │ single, stateless     │  │ MCF · C@G ·      │
 │ jobs·artifacts·  │  │ completions           │  │ JobStreet        │
-│ FSM·dedup·       │  │ — also used directly  │  └──────────────────┘
-│ conversations·   │  │   by the Agent loop   │
-│ sessions·        │  └──────────────────────┘
-│ pending_pushes   │
-└──────────────────┘
+│ FSM·dedup        │  │ — also used directly  │  └──────────────────┘
+│ (3 thin routes:  │  │   by the Agent loop   │
+│  /chat, /action, │  └──────────────────────┘
+│  /follow-up)     │   Conversation store (separate SQLite + JSONL)
+└──────────────────┘   is owned by the Agent, NOT the backend or scheduler
 
 Phase 2 — Application Worker: separate process, polls DB for APPLYING
 records, drives ATS forms (Playwright + browser-use). LinkedIn excluded.
@@ -269,30 +279,64 @@ endpoints were live-tested on 2026-06-10; findings below.
 Rate limiting per adapter via configurable delay (carried over from v1 Tavily
 client). Each adapter is independently unit-testable with mocked HTTP.
 
-**Implementation playbook:** `adapters.md` — the reconnaissance method,
-the JobSource contract, test requirements, definition of done (including
-how to update this document), and per-portal work orders. New adapters are
-built by following that playbook; this section only records outcomes.
+**Implementation playbook:** `scraper_layer.md` — the work-package
+breakdown (Careers@Gov, MCF, JobStreet), the JobSource contract, test
+requirements, definition of done, and per-portal work orders. New adapters
+are built by following that playbook; this section only records outcomes.
 
-### 3. Backend API — extended, not rewritten
+### 3. Backend API — service facade, thin HTTP surface
 
-**Responsibility:** Source of truth for job records and artifacts. All writes
-from every component go through it.
+**Responsibility:** Source of truth for job records and artifacts. Every write
+from every component goes through its single validated path. (Full spec:
+`backend_v2.md`.)
 
-Schema changes:
+**The service layer is the real interface, not HTTP.** The backend exposes a
+`JobService` facade — an in-process object presenting one front door to the
+validated operations (`ingest_job`, `transition_status`, `register_artifact`,
+`record_follow_up`, `mark_follow_up_nudged`, and the read functions). It is
+constructed once at the composition root (`main.py`) and injected via
+dependency injection into its in-process callers — the scheduler, the agent's
+tool handlers, and the tailoring consumer. There is **no self-HTTP**:
+in-process callers invoke a plain method with no network hop.
+
+**Exactly three thin inbound HTTP routes survive**, all for the separate
+Telegram bot device (see § 6):
+- `POST /chat` — free-text message → agent. The only place an LLM call can
+  originate. Returns `{ reply, attachments? }` (attachments carry base64 file
+  bytes, typically a tailored PDF).
+- `POST /jobs/{job_id}/action` — a button tap → `transition_status`.
+  Deterministic, bypasses the agent; body is `{ action: UserAction }`.
+- `POST /jobs/{job_id}/follow-up` — a button tap → `record_follow_up`.
+  Deterministic, record-only (never touches `status` or `status_changed_at`).
+
+Every other operation the old CRUD endpoints exposed — artifact registration,
+status filtering, ranked selection — is now an in-process facade call, not an
+endpoint.
+
+Schema changes (jobs database):
 - `jobs.status` extended to the full pipeline FSM above.
 - New lifecycle columns on `jobs`: `status_changed_at` (stamped on every
   status transition — the clock for follow-up/ghost/expiry rules),
-  `follow_up_count`, `last_follow_up_at` (follow-up activity, tracked
-  separately so it never resets the ghost clock), `seen_count` and
+  `follow_up_count`, `last_follow_up_at` (user follow-up activity, tracked
+  separately so it never resets the ghost clock), `follow_up_nudge_at`
+  (stamped only by the scheduler's `mark_follow_up_nudged` — "we reminded
+  you", a distinct writer from "you followed up"), `seen_count` and
   `last_seen_at` (stamped on duplicate ingest — liveness signal for the
   lifecycle job).
 - New `artifacts` table: `(id, job_id FK, kind ['cv_pdf','cover_letter','follow_up_email'], path, created_at)`.
-- New `conversations` table: `(chat_id, session_id, turn_index, role, content, created_at)` — conversation turns per session (see § 7). Reference-resolution only; never holds authoritative facts.
-- New `sessions` table: `(session_id, chat_id, started_at, ended_at NULL)` — session lifecycle for `/start` / `/end` / idle-timeout.
-- New `pending_pushes` table: `(id, chat_id, push_type, payload, created_at, delivered_at NULL)` — pushes held during an active conversation (see § 8).
-- New endpoints: `POST /jobs/{id}/artifacts`, `GET /jobs?status=...` filter,
-  `POST /jobs/{id}/follow-up` (increments count, stamps timestamp).
+  Registration is **append-only** — a new row on every call, never
+  overwritten (see § 9, Artifact identity).
+
+**Conversation persistence is NOT in this database.** Sessions and turns live
+in a *separate* conversations database in a dedicated `conversation/` package,
+owned by the agent alone (see § 7 and `conversation_store_v2.md`). The jobs
+backend holds no `conversations`, `sessions`, or `pending_pushes` table — the
+two-bot split (§ 6) deleted the held-push machinery entirely.
+
+`UserAction` is strictly narrower than `Status`: a button tap can only target a
+user-legal state (`APPLIED`, `USER_SKIPPED`, `INTERVIEWING`, `OFFER`,
+`ACCEPTED`, `DECLINED`, `REJECTED`), never a system-only state like `SCORED` or
+`TAILORED`.
 
 Repository pattern unchanged — SQLite now, PostgreSQL later touches one file.
 
@@ -302,23 +346,32 @@ Repository pattern unchanged — SQLite now, PostgreSQL later touches one file.
 ("basis points": internal float similarity × 10,000, rounded). Decides
 `DISCOVERED → SCORED` (≥ `score_threshold`) vs `REJECTED`.
 
-- v2.0: keyword overlap, but keywords **derived from profile.json** instead of
-  static config.
-- v2.1: embedding cosine similarity (JD text vs full profile text) — this is
-  what makes **adjacent roles** rank correctly despite low keyword overlap.
-- **Signature: `score(jd_text, candidate) -> int` (0–10000).** Embeddings add a
-  model dependency: inject the embedder so tests pass a mock (same seam
+- **v2 scores with embeddings from the start** (single implementation:
+  `EmbeddingScorer`). Cosine similarity between the JD's embedding vector and
+  the candidate profile's vector — one number capturing semantic match. This
+  is what makes **adjacent roles** rank correctly despite low literal keyword
+  overlap. (Full spec: `scoring_v2.md`.)
+- **Signature: `async def score(jd_text, candidate) -> int` (0–10000).**
+  `async` because producing an embedding is a network call to the embeddings
+  API (OpenAI). The embedder is injected so tests pass a mock (same seam
   pattern as `LLMClient` injection in the agent). The scorer runs **once, at
-  discovery** (`score(jd, full_profile)`). Tailoring does not re-score — the
-  three-tier structural controls are the correctness guarantee (see § Tailoring
-  Service).
-- **Discovery is a coarse filter by design.** `score_threshold` is deliberately
-  **lenient and configurable** — "plausibly relevant, let it through." The daily
-  budget (`tailor_batch_size`), not the threshold, is the real throttle.
-- **Deferred (0.7.x):** once embeddings land (v2.1), mean-pooling the bloated
-  superset into one vector can depress good-fit jobs in the top-N ranking even
-  past a lenient gate; fix by ranking on profile *chunks* (top-k / max-pool)
-  at 0.7.x.
+  discovery**. Tailoring does not re-score — the three-tier structural
+  controls are the correctness guarantee (see § Tailoring Service).
+- **The profile vector is cached on the `Scorer` instance**, keyed by a
+  SHA-256 fingerprint of the profile text, so the profile is embedded once and
+  reused across the whole scrape batch; a profile edit changes the fingerprint
+  and invalidates the cache automatically.
+- **Embedding-service failure raises — it never fabricates a zero.** On an API
+  failure the scorer raises rather than returning a misleading `0`; the caller
+  leaves the job at `DISCOVERED` so it is retried on the next run, instead of
+  silently rejecting a good job on a transient network blip.
+- **Discovery is a coarse filter by design.** `score_threshold` (7000) is
+  deliberately **lenient and configurable** — "plausibly relevant, let it
+  through." The daily budget (`tailor_batch_size`), not the threshold, is the
+  real throttle.
+- **Deferred (0.7.x):** mean-pooling the bloated profile superset into one
+  vector can depress good-fit jobs in the top-N ranking even past a lenient
+  gate; fix by ranking on profile *chunks* (top-k / max-pool) at 0.7.x.
 
 Integer score contract:
 
@@ -335,8 +388,9 @@ Integer score contract:
 - **Score once, store, never recompute.** Stamped at ingest; the daily
   ranking only reads stored integers. Re-scoring would let embedding-model
   drift shuffle the pool ranking between runs.
-- **NaN guard.** The one unit test that matters: empty keyword list (v2.0)
-  or zero vector (v2.1) → score returns `0`, never NaN.
+- **NaN guard.** The one unit test that matters: a zero vector (empty or
+  degenerate input) → score returns `0`, never NaN. (Note this is the
+  *degenerate-input* zero; a *service failure* raises instead, per above.)
 
 Daily tailor-pass selection (deterministic, hence testable):
 
@@ -385,8 +439,9 @@ Notes:
   lifecycle job can expire `SCORED` records faster once they stop appearing
   in scrapes.
 - Both functions remain pure (no I/O); uniqueness is still enforced by the
-  DB constraint on `fingerprint`; the idempotent upsert in `POST /jobs` is
-  unchanged. Adapters never dedup (invariant 1).
+  DB constraint on `fingerprint`; the idempotent upsert lives inside the
+  `ingest_job` facade call (in-process, no HTTP). Adapters never dedup
+  (invariant 1).
 - Source-native identity (`objectID`, MCF uuid, portal URL) is kept in
   `metadata` for traceability — it's an attribute of the record, not part
   of its identity.
@@ -441,7 +496,8 @@ This means ATS optimization is **not a separate gate** and there is no
 post-tailor re-score. The scorer runs once at discovery; the structural guards
 are the tailoring-quality guarantee.
 
-Artifacts are written to disk, registered via `POST /jobs/{id}/artifacts`.
+Artifacts are written to disk, registered via the `register_artifact` facade
+call (in-process, append-only — see § 9, Artifact identity).
 
 Testing: mock the LLM, assert schema validity; snapshot-test the renderer.
 Additional guards (see `tailoring.md` § invariants): every `ref_id` resolves to a
@@ -461,54 +517,76 @@ serves as the executable specification, where each `TC-*` case traces back to a
 records the design; the service is built by following the plan. The split is the
 same one used elsewhere: `tailoring.md` is the decision record, and
 `tailoring_build.md` is the build playbook, mirroring how § Scraper Layer pairs
-with `adapters.md`.
+with `scraper_layer.md`.
 
-### 6. Telegram Bot — transport layer (thin)
+### 6. Telegram Bot — transport layer (two bots)
 
 **Core principle:** Telegram is transport only. It moves messages between the
 user and the backend and renders what it is handed. It holds **no business
 logic, no pipeline state, and no conversation history**. Every decision about
 *what* to say, *which* job a reply refers to, or *when* a session begins lives
-above it (agent + repository). If a behaviour requires a decision, it does not
-belong in this layer.
+above it (agent + conversation store). If a behaviour requires a decision, it
+does not belong in this layer. (Full spec: `telegram_v2.md`.)
+
+**Two separate bots, each with its own token and its own polling loop** — this
+is the structural change that deletes the old push-coexistence problem
+(§ 8), because notifications and conversation now live on two physically
+different channels and can never collide on one surface:
+
+- **Chat bot** — the agent's channel. Receives free-text from the user, calls
+  `POST /chat`, and delivers the agent's `reply` back, plus any attachment
+  (typically a tailored PDF, base64-decoded from the response) as a document.
+  Nothing else.
+- **Notifications bot** — the scheduler's outbound channel. Pushes approval
+  cards, follow-up cards, digests, and ghost notices, and receives the button
+  taps those cards generate (`POST /jobs/{id}/action` and
+  `POST /jobs/{id}/follow-up`). No free-text.
+
+Both bots are fully stateless: after the two-bot split neither holds any
+in-memory state or database.
 
 #### What the Telegram layer IS responsible for
 
-1. **Inbound transport.** Receive a user message (text or button callback),
-   attach the `chat_id`, forward to the backend (`POST /chat` for text;
-   `PATCH /jobs/{id}/status` or the relevant endpoint for button callbacks —
-   the callback payload carries the `job_id`, so button actions need no
-   conversation context and are always unambiguous).
-2. **Outbound transport.** Send backend-produced messages to the chat:
-   deliver text, attach PDF/document artifacts, render inline keyboards.
+1. **Inbound transport.** Chat bot: free-text → `POST /chat`. Notifications
+   bot: a button tap → `POST /jobs/{id}/action` (carrying an opaque
+   `UserAction` string copied verbatim from the callback data) or
+   `POST /jobs/{id}/follow-up` (empty body). The callback payload carries the
+   `job_id`, so button actions need no conversation context and are always
+   unambiguous.
+2. **Outbound transport.** Send scheduler-produced messages through the
+   notifications bot: text, PDF/document attachments, inline keyboards.
 3. **Telegram-flavoured rendering only.** Turn already-decided content into
-   Telegram markdown, button layouts, and document uploads. This is the one
-   kind of "formatting" it owns — *rendering*, never *structuring*. It does
-   not decide what goes into a digest or how a follow-up reads; it renders the
-   finished string.
-4. **Command surface.** Expose `/start` and `/end` (session boundaries, below)
-   and map button taps to backend calls. Commands are forwarded, not
-   interpreted — the session lifecycle itself is owned by the backend.
+   Telegram markdown, button layouts, and document uploads — *rendering*,
+   never *structuring*.
+4. **Command surface.** The chat bot exposes only `/start`, which sends a
+   static greeting locally and signals **nothing** to the backend. **There is
+   no `/end` command** and no session endpoint — session boundaries are the
+   agent's own lazy inference from `/chat` traffic (§ 7).
 
 #### What the Telegram layer is NOT responsible for
 
-- **Not** conversation history — it never stores or appends turns (see § 7).
+- **Not** conversation history or sessions — it never stores or appends turns,
+  and it sends no session-open/close/idle signals (see § 7).
 - **Not** deciding which job a free-text reply refers to — the agent resolves
   references from session context.
 - **Not** content structuring — digest contents, follow-up wording, push copy
   are produced upstream (template or agent) and handed down as finished text.
+- **Not** the FSM — on a button tap the bot carries the opaque `UserAction`
+  string into the request body; it never imports the enum, validates
+  membership, or maps actions to edges. All server-side.
 - **Not** pipeline state — job status is authoritative in the DB; Telegram
   reflects it, never holds it.
 
 #### Push notifications (system-initiated messages)
 
-These are produced by scheduled jobs and pushed through Telegram. Each carries
-a self-labelling header (role + company) so it is interpretable even out of
+Produced by scheduled jobs and pushed through the notifications bot. Each
+carries a self-labelling header (role + company) so it is interpretable out of
 conversational context.
 
 - **Tailored job ready** (`PENDING_APPROVAL`): role, company, score, listing
   URL, tailored CV PDF, inline keyboard.
-  - Phase 1 buttons: `[Mark Applied]` `[Skip]` → `PATCH /jobs/{id}/status`.
+  - Phase 1 buttons: `[Mark Applied]` → `action: APPLIED`, `[Skip]` →
+    `action: USER_SKIPPED`, both via `POST /jobs/{id}/action`.
   - Phase 2 buttons: `[Apply for me]` `[Skip]`.
 - **Follow-up draft** (`APPLIED` + `follow_up_after_days`, none sent yet):
   context line + LLM-drafted email text (copy-paste ready) + `[Sent it]`
@@ -516,85 +594,74 @@ conversational context.
 - **Auto-ghost notice** (informational): one line, no buttons.
 - **Weekly digest** (informational): pipeline summary.
 
-Push *delivery timing* relative to an active conversation is governed by § 8
-(it is not a Telegram-layer decision — Telegram just sends what the delivery
-rule releases to it).
+Because the two bots are separate channels, a push never has to yield to an
+in-progress chat — there is no hold, queue, or flush (§ 8).
 
 ### 7. Conversation Sessions & History
 
 History exists for exactly one job: **resolving references** ("that one",
 "the third", "make it more formal") across a handful of recent turns. It is
-**not** a memory of the job search — every durable fact lives in the DB and is
-queried live. This narrow mandate is what lets sessions be cleared freely
-without losing anything real.
+**not** a memory of the job search — every durable fact lives in the jobs DB
+and is queried live. This narrow mandate is what lets a stale session simply
+fall out of scope without losing anything real. (Full spec:
+`conversation_store_v2.md`.)
+
+**The conversation store is a separate concern owned by the agent alone**, not
+part of the jobs backend. It is a dedicated `conversation/` package with:
+- a **second SQLite database** holding one `sessions` table —
+  `(id UUID, started_at, last_activity_at, transcript_path)`. No `chat_id`
+  (single user), and crucially **no `ended_at`** — see below.
+- **JSON Lines transcript files**, one file per session, holding the turns
+  (each line is one `Turn` = `{role, content, created_at}`). Appending a turn
+  appends a single line; the path is derived from the session id, so no DB
+  lookup is needed to find it.
+- a `ConversationStore` facade injected into the agent, exposing exactly four
+  methods: `start_session`, `get_latest_session`, `append_turn`,
+  `load_history`. The scheduler receives **no** reference to it.
 
 Three responsibilities, three homes (dependency arrows point downward only):
 
-- **Storage — repository.** A `conversations` table keyed by
-  `(chat_id, session_id, turn_index)`. `append_turn(...)`,
-  `get_session_turns(session_id)`. Durable, so an app restart mid-session
+- **Storage — conversation store.** Durable, so an app restart mid-session
   loses nothing. Storage knows nothing about windowing or the LLM.
-- **Assembly — agent layer (`ConversationContext` module).** Owns
-  `build_context(session_id) -> messages[]` (load the current session's turns,
-  assemble into the LLM messages array) and `record(session_id, role, content)`
-  (append a turn). The ReAct loop calls these; it never trims inline. Isolating
-  the policy here means a future summarise-on-eviction upgrade touches one
-  module. v1 policy is trivial: **load the whole current session** — `/end`
-  keeps sessions short, so no within-session windowing is needed yet. The
-  `ConversationContext` seam exists from day one; its policy stays dumb until a
-  real marathon session forces an upgrade.
+- **Assembly — agent layer.** The agent loads a session's turns and assembles
+  them into the LLM messages array; the ReAct loop never trims inline.
+  Compaction (summarise-on-eviction) is a seam inside the agent's context
+  module, a no-op in v1: policy is trivially **load the whole current
+  session**, because idle bounding keeps sessions short.
 - **Reference-resolution — emergent.** No component of its own: with recent
   turns in the assembled context, the LLM resolves "that one" during normal
   inference.
 
-**Sessions.** `/start` opens a session; `/end` closes it. **Auto-open** is the
-default: a message with no open session implicitly starts one, so quick
-one-shot queries ("anything ghosted?") need no ceremony. `/start` then means
-"explicitly begin fresh"; `/end` means "I'm done — forget the references"
-(facts already persisted to the DB are untouched). A session is also
-considered closed by **idle-timeout** (no user turn for `session_idle_minutes`),
-checked by the scheduler so a walked-away user's session self-heals.
+**Sessions — no end event.** A session is just a bounded window of recent turns
+the agent reads to build context. There is no `/start` open, no `/end` close,
+and no scheduled flush. Instead the agent decides **continue-vs-new lazily on
+each `/chat` call**: it asks the store for the latest session, and if that
+session's `last_activity_at` is older than `session_idle_minutes` (an **agent**
+config value, not the store's and not the scheduler's), it starts a fresh
+session; otherwise it continues the latest one. A stale session is never
+reused, so it never has to be closed — it simply falls out of scope when the
+next message opens a new one. This is also what expires a stale `PENDING_ACTION`
+marker (§ 9): once a new session starts, the old turns are no longer in the
+loaded history.
 
-The endpoint stays stateless: `ConversationContext` rehydrates the session from
-the DB on every `POST /chat` call.
+The endpoint stays stateless: the agent rehydrates the session from the store
+on every `POST /chat` call.
 
-### 8. Push Delivery & Conversation Coexistence
+### 8. Push Delivery (plain — no coexistence gate)
 
-The hard problem: a scheduled push can fire **while the user is mid-conversation
-about a different job**. Injecting it into the thread interleaves two subjects
-and makes the next "tailor that one" ambiguous. The rule:
+The two-bot split (§ 6) **deletes** what used to be the hard problem here.
+Because notifications go out on the notifications bot and conversation happens
+on the chat bot, a scheduled push can never interleave with an in-progress
+chat on the same surface. There is therefore **no** push-coexistence gate, no
+`last_activity_at` signal read by the scheduler, no held-push queue, no
+coalesced nudge, and no flush step. All of that is **deleted, not deferred**.
 
-> **Notification can always fire; injection into the chat thread waits for a
-> clean moment.** An active conversation is never interrupted by content — only
-> by a lightweight signal that content is waiting.
-
-Two delivery modes, chosen by conversation state at push time:
-
-- **Idle / no active conversation:** deliver the push in full immediately
-  (implicit `/start` if no session is open). Normal path.
-- **Active conversation:** do **not** inject the push. Enqueue it
-  (repository-backed pending-push queue, keyed by `chat_id`, durable) and
-  surface only a **single coalesced nudge** — one message that ticks up
-  ("📥 1 item waiting" → "📥 2 items waiting", edited in place, never one
-  notification per push). Flush the queue in full when the conversation ends.
-
-"Conversation ends" = `/end` (express lane) **or** idle-timeout (safety net,
-via a small periodic scheduler check: any chat idle past the threshold with
-queued pushes → flush). Buttons are exempt from all of this: a button tap
-carries its own `job_id` and is always unambiguous, so push *responses* via
-buttons work regardless of conversation state — only free-text replies to a
-push needed protecting, which this design provides.
-
-**Uniform hold policy (v1):** every push type may be held during an active
-conversation; none overrides. All current pushes (tailored CV, follow-up draft,
-ghost notice, digest) tolerate a short delay. *Note for future push types:* if
-a genuinely time-critical push is ever added, it must explicitly opt out of
-holding — silence-inheriting the wrong behaviour is the trap to avoid.
-
-Pending-push queue (repository): `(chat_id, push_type, payload, created_at,
-delivered_at NULL)`. Durable across restarts. The flush is a step in the
-session-end handler and in the idle-timeout scheduler job — Telegram only sends
-what the flush releases.
+What remains is plain push delivery: a scheduled job formats its message and
+sends it straight through the notifications bot via the Telegram API. The only
+thing that comes *back* to the backend is the button reply those cards
+generate, which arrives through `POST /jobs/{id}/action` or
+`POST /jobs/{id}/follow-up` — never through `/chat`. The scheduler and the
+conversation store never touch.
 
 ### 9. Agent Brain — reasoning layer, NOT the orchestrator
 
@@ -612,28 +679,67 @@ agent": the model is a leaf dependency that the agent loop and the services use
 independently.
 
 Architecture unchanged: LiteLLM ReAct loop, stateless `POST /chat`, LLM
-proposes → backend validates → repository executes. New/changed tools:
+proposes → backend validates → repository executes. Full spec (schemas, I/O
+contracts, reference-resolution eval set): `agent_v2.md`.
 
-| Tool | Change |
+**Ten tools.** Each is a thin LLM-facing binding over a caller-agnostic service:
+
+| Tool | Purpose |
 |---|---|
-| `search_jobs` | Now invokes scraper adapters directly (ad-hoc interactive search) |
-| `tailor_resume` | New — trigger tailoring for a specific job on demand |
-| `draft_followup` | New — draft a follow-up email for a specific job on demand ("draft a follow-up for the PUB role") |
-| `draft_cover_letter` | New — generate a cover letter for a specific job (JD + profile → `kind='cover_letter'` artifact) |
-| `regenerate_queries` | New — rebuild `search_queries.json` from current profile |
-| `query_jobs` | Gains status-filter awareness (pipeline states) |
-| `log_job`, `update_status`, `update_profile` | Unchanged |
+| `find_jobs` | **The single read tool.** With a `job_title` it is a named lookup (case-insensitive *partial* match, optionally narrowed by `company`); without one it is a status listing ("what's in my pipeline"). Recency-ordered (`status_changed_at` desc, then `id` asc) — that fixed order is what makes "the third one" deterministic. Replaces the former `query_jobs`. |
+| `search_jobs` | Runs scraper adapters and **ingests** the results (dedup → DISCOVERED → scored); not a preview. |
+| `score_job` | Assess-only: scores a pasted JD against the profile, writes nothing. |
+| `score_ingest` | Record-and-score: upsert the job, then score it — but **skip re-scoring** when the existing row already carries a score (saves embedding credits). |
+| `update_status` | Propose an FSM transition (stamps `status_changed_at`; the backend rejects illegal moves). |
+| `tailor_resume` | Trigger tailoring for one job; produces + registers a `cv_pdf` artifact. Does **not** move the FSM (see two-turn confirmation). |
+| `draft_followup` | Draft a follow-up email for one job (`follow_up_email` artifact). Drafting ≠ sending — never touches status or `follow_up_count`. |
+| `draft_cover_letter` | Generate a cover letter for one job (`cover_letter` artifact, plain text). |
+| `regenerate_queries` | Rebuild `search_queries.json` from the current profile (same service the scheduler's weekly `query_regen` calls). |
+| `update_profile` | The only source-of-truth mutator and the only two-phase write: first call returns a diff and writes nothing; `confirmed=True` commits. |
 
-**Every tool is a thin binding, not the work itself.** Each tool is two parts:
-a function-calling *schema* (so the LLM can propose the call) and a *handler*
-that parses the emitted arguments, calls the underlying service, and marshals
-the result back into the context. The work lives in the service — and for any
-capability the scheduler also drives (tailoring, scrape/ingest, follow-up
-drafting, query regeneration, status transitions), the scheduled job and the
-agent handler call the **same** service. The service signature carries no notion
-of its caller, so the two paths never couple. The agent layer owns the schema
-and the handler; it never owns the work, the session lifecycle (backend), or
-turn storage (repository). Per-tool I/O contracts live in `agent_v2.md`.
+**`log_job` is removed.** There is deliberately no record-only tool: every job
+that enters the database must be scored, so a bare "just record this" request
+is declined in favour of `score_ingest`. Mutating tools take an already-resolved
+`job_id` — the entire 0/1/N ambiguity surface lives in the `find_jobs`
+resolution flow, not smeared across the tools.
+
+**Every tool is a thin binding, not the work itself** — a function-calling
+*schema* plus a *handler* that parses args, calls the service, and marshals the
+result. For any capability the scheduler also drives (tailoring, scrape/ingest,
+follow-up drafting, query regeneration, status transitions), the scheduled job
+and the agent handler call the **same** service, whose signature carries no
+notion of its caller. The agent owns the schema and handler; it never owns the
+work, session policy is its own but session *storage* is the conversation
+store's (§ 7).
+
+#### Agent mechanics (three that shape the FSM and transport)
+
+- **Artifact identity — append-only in the DB, single-live-file on disk.**
+  `register_artifact(job_id, {kind, path})` inserts a **new row on every call**
+  and never overwrites, so the table keeps the full history (`kind ∈ {cv_pdf,
+  follow_up_email, cover_letter}`). The "one current file per job" property is
+  enforced on the **filesystem**: before writing a new tailored resume the tool
+  backs up any existing file to a timestamped `.bak` name, then writes the new
+  one in place. The return shape gains `replaced: bool`.
+- **Two-turn confirmations.** Both `update_profile` (diff → commit) and
+  tailoring (show PDF → transition) span two user turns. Because the agent is
+  stateless per call, the pending action is stored as a compact machine-exact
+  marker embedded in the agent's own assistant turn, delimited so the bot
+  strips it before display: `<<<PENDING_ACTION {…}>>>`. On the next call the
+  agent finds the most recent unresolved marker and, on an affirmation, replays
+  the stored payload verbatim. The marker lives *inside the turn text*, not as a
+  new field on the `Turn` model, so the agent never reaches into the
+  conversation store's schema. A stale marker expires naturally when a new
+  session starts (§ 7).
+- **The SCORED→PENDING_APPROVAL move is the tailor caller's, not the tool's.**
+  `tailor_resume` only produces and registers the artifact. The scheduler
+  advances the FSM in the daily batch; the agent advances it on demand **only
+  after the user accepts** — the second turn of the confirmation above.
+- **`POST /chat` transport.** In: `{ message }`. Out: `{ reply, attachments? }`,
+  where each attachment is `{ filename, mime_type, content_b64 }` (raw bytes as
+  base64 so a binary can ride inside JSON). The chat bot decodes it and forwards
+  it to Telegram as a document. Every file the agent makes must ride out in this
+  single response — the agent holds no Telegram client.
 
 #### Incorporated skills — the agent's domain expertise
 
@@ -705,7 +811,7 @@ rendering deterministic and uncrashable:
   pass (`& % $ # _ { } ~ ^ \`) before template substitution. An unescaped `&`
   in a company name or a `%` in a bullet silently breaks compilation otherwise.
 - **Compile = `tectonic` (or `latexmk`), deterministic.** Template + escaped
-  JSON → `.tex` → compile → PDF → register via `POST /jobs/{id}/artifacts`.
+  JSON → `.tex` → compile → PDF → register via the `register_artifact` facade call.
 - **One template, entry-level.** A single entry-level / technical section order
   (Skills + Projects prioritised, Education weighted, 3–5 achievement bullets).
   No multi-template selection — that would reopen the "LLM affects layout"
@@ -756,24 +862,34 @@ application form, transition to `APPLIED` or `APPLY_FAILED`.
 regenerates `search_queries.json` from the profile. One LLM call, auditable
 output, human-vetoable. This is where adjacent-role reasoning lives.
 
-**Fast loop (deterministic, daily):** APScheduler scrape job reads
-`search_queries.json`, fans out across adapters, ingests via `POST /jobs`
-(dedup happens here), scores, queues tailoring. **Zero LLM calls for
-discovery/ingest** — keeps it cheap, deterministic, and testable as plain
-functions (no scheduler in tests, same as v1).
+**Fast loop (deterministic, daily):** the scrape job reads
+`search_queries.json` (fresh each run, so weekly regeneration takes effect
+without a restart), fans out across adapters, ingests **in-process** via the
+injected `JobService` facade (`service.ingest_job(...)` — dedup happens here,
+no self-HTTP), scores inline, and transitions to SCORED/REJECTED. **Zero LLM
+calls for discovery/ingest** (scoring uses the embeddings API, not the chat
+LLM) — cheap, deterministic, testable as plain functions (no scheduler in
+tests). Full spec: `scheduling_v2.md`.
 
-Scheduled jobs (all plain functions, tested without the scheduler):
+**Six scheduled jobs** (all plain async functions, tested without the
+scheduler), run in this daily order so each stage sees the previous stage's
+results: `query_regen` (Mon only, before scrape) → `scrape+score` →
+`lifecycle` → `follow_up` → `tailor` → `digest` (Mon only, last).
 
 | Job | Cadence | LLM? | Does |
 |---|---|---|---|
-| scrape | daily | no | queries → adapters → `POST /jobs` → score → SCORED/REJECTED |
-| tailor | daily (after scrape) | yes (budgeted) | top-`tailor_batch_size` SCORED by score → tailor → PDF → PENDING_APPROVAL → Telegram push |
-| follow-up | daily | yes (small N) | `APPLIED` past `follow_up_after_days`, `follow_up_count = 0` → draft email → Telegram push with `[Sent it] [Skip]` |
-| lifecycle | daily | **no** | three deterministic time rules on `status_changed_at`: `PENDING_APPROVAL > pending_expiry_days → EXPIRED`; `SCORED > stale_after_days → REJECTED`; `APPLIED/INTERVIEWING > ghost_after_days → GHOSTED` (+ Telegram note) |
-| digest | weekly (Mon) | optional | pipeline summary: active states, follow-ups pending, recent ghosts/expiries |
-| query regen | weekly / on profile change | yes (1 call) | profile → `search_queries.json` |
-| session-flush | every few min | **no** | any chat idle past `session_idle_minutes` → close session + flush pending-push queue (see § 8) |
+| scrape | daily | no | queries → adapters → `ingest_job()` → score inline → SCORED/REJECTED |
+| lifecycle | daily | **no** | three deterministic time rules on `status_changed_at`: `PENDING_APPROVAL > pending_expiry_days → EXPIRED`; `SCORED > stale_after_days → REJECTED`; `APPLIED/INTERVIEWING > ghost_after_days → GHOSTED` (+ ghost notice) |
+| follow-up | daily | yes (small N) | `APPLIED` past `follow_up_after_days`, not yet nudged → draft email → push with `[Sent it] [Skip]`; stamps `follow_up_nudge_at` |
+| tailor | daily (after scrape) | yes (budgeted) | top-`tailor_batch_size` SCORED by score → tailor → PDF → PENDING_APPROVAL → push |
+| query_regen | weekly (Mon) + on-demand | yes (1 call) | profile → `search_queries.json` (backup-on-change; also backs the agent's `regenerate_queries` tool) |
+| digest | weekly (Mon) | **no** (default) | pipeline summary: active states, follow-ups pending, recent ghosts/expiries |
 | apply (P2) | poll | per-form | `APPLYING` records → ATS form-fill → APPLIED/APPLY_FAILED |
+
+**There is no seventh session-flush job.** The two-bot split (§ 6, § 8)
+removed the held-push queue and the idle-flush it existed to service; session
+idle is now checked lazily by the agent on each `/chat` call (§ 7), not by the
+scheduler.
 
 Note the split: the **follow-up check** is deterministic and free; only
 drafting the email (a handful of jobs/day at most) costs tokens. The
@@ -832,43 +948,44 @@ per-adapter `delay_s`, LiteLLM `rpm`/`tpm`.
    Agent reads profile.json ─► generates search_queries.json (LLM, 1 call)
 
 2. [daily, APScheduler]
-   for query in search_queries.json:
+   for query in search_queries.json:          # re-read fresh each run
        for adapter in [MCF, CareersGov, JobStreet]:
            raw = adapter.fetch(query)          # no LLM
-           POST /jobs (normalise → dedup → DISCOVERED)
+           service.ingest_job(...)             # in-process; normalise → dedup → DISCOVERED
 
 3. [same run]
    for job in status=DISCOVERED:
-       s = score(job.description, profile)     # pure fn, int 0–10000
+       s = await scorer.score(job.description, profile)   # embeddings, int 0–10000
        s >= score_threshold (7000) ? SCORED : REJECTED
 
 4. [tailoring pass — budgeted]
    for job in top tailor_batch_size of status=SCORED (by score desc):
-       tailored = tailor_once(jd, profile)         # one LLM call + guard validation
+       tailored = tailor(jd, profile)              # one LLM call + guard validation
        pdf      = render(tailored, profile)         # deterministic: identity + resolved selection
-       POST /jobs/{id}/artifacts ─► TAILORED ─► PENDING_APPROVAL
+       service.register_artifact(...) ─► service.transition_status(PENDING_APPROVAL)
        on guard violation: log + fail cleanly, no render
    (remaining SCORED records wait for tomorrow's batch;
     SCORED untouched > stale_after_days ─► REJECTED)
 
-5. [Telegram push]
+5. [notifications bot push]
    send(role, company, score, link, pdf, [Mark Applied] [Skip])
 
 6. [user taps button]
-   PATCH /jobs/{id}/status ─► APPLIED | USER_SKIPPED
+   POST /jobs/{id}/action  {action: APPLIED | USER_SKIPPED}
 
 7. [post-application, ongoing]
-   user (Telegram chat): "got an interview with PUB" / "rejected by GovTech"
-       ─► agent: query_jobs to resolve record ─► update_status
+   user (chat bot → POST /chat): "got an interview with PUB" / "rejected by GovTech"
+       ─► agent: find_jobs to resolve record ─► update_status
        ─► APPLIED → INTERVIEWING → OFFER → ACCEPTED | REJECTED
        (every transition stamps status_changed_at)
 
 8. [follow-up job, daily — deterministic check, LLM only for drafting]
    for job where status=APPLIED
             AND status_changed_at older than follow_up_after_days
-            AND follow_up_count = 0:
+            AND not yet nudged (follow_up_nudge_at IS NULL):
        draft = llm_draft_followup(role, company, applied_date)
-       Telegram push: context + draft email + [Sent it] [Skip]
+       notifications push: context + draft email + [Sent it] [Skip]
+       mark_follow_up_nudged(...)               # stamps follow_up_nudge_at
    [Sent it] ─► POST /jobs/{id}/follow-up
        (follow_up_count += 1; status stays APPLIED;
         ghost clock NOT reset — it runs on status_changed_at)
@@ -880,7 +997,8 @@ per-adapter `delay_s`, LiteLLM `rpm`/`tpm`.
    (GHOSTED → INTERVIEWING allowed if the company resurfaces)
 
 Phase 2 replaces step 6's manual apply:
-6'. [Apply for me] ─► APPLYING ─► worker fills ATS form ─► APPLIED | APPLY_FAILED
+6'. [Apply for me] ─► POST /jobs/{id}/action {action: APPLYING}
+    ─► worker fills ATS form ─► APPLIED | APPLY_FAILED
     (auto_apply: true skips the approval push entirely)
 ```
 
@@ -895,11 +1013,12 @@ Phase 2 replaces step 6's manual apply:
 | Data access | Repository pattern, raw SQL | Keep |
 | Agent | LiteLLM (`gemini/gemini-2.5-flash-lite`), ReAct loop | Keep + new tools |
 | Scraping | httpx (MCF `POST /v2/search`; Careers@Gov Algolia) + httpx/BeautifulSoup (JobStreet) | **Replaces Tavily** |
-| Scoring | Pure Python → embeddings (injected embedder) | Upgrade |
+| Scoring | Embedding cosine similarity (injected async embedder; OpenAI), profile vector cached | New |
 | Dedup | hashlib SHA-256 over normalized (company + title); `seen_count`/`last_seen_at` on duplicate hits | Changed inputs |
 | Tailoring LLM | LiteLLM structured output → Pydantic-validated JSON | New |
 | PDF rendering | Jinja2 `.tex` template + Tectonic/latexmk (alt: RenderCV) | New |
-| Notifications/UI | python-telegram-bot (inline keyboards, document upload) | Extend |
+| Notifications/UI | python-telegram-bot, **two bots** (chat + notifications), inline keyboards, document upload | Extend |
+| Conversation store | separate SQLite DB + JSON Lines transcripts, agent-owned | New |
 | Apply automation | Playwright + browser-use, separate process | Phase 2 |
 | Scheduling | APScheduler (FastAPI lifespan) | Keep |
 | Logging | loguru | Keep |
@@ -915,11 +1034,11 @@ Phase 2 replaces step 6's manual apply:
 | 1 | MCF adapter (`POST /v2/search`, Pydantic response model — fixes URL/JD quality immediately) | 0.6.0 |
 | 2 | Careers@Gov adapter (Algolia, referer headers — see `careers_gov_adapter.py`) | 0.6.0 |
 | 3 | FSM migration + artifacts table | 0.6.0 |
-| 4 | Profile-derived keywords; CV → `profile.json` parse (superset; parse proposes `demonstrated_skills` per item, human-reviewed) | 0.6.0 |
+| 4 | CV → `profile.json` parse (superset; parse proposes `demonstrated_skills` per item, human-reviewed) + embedding scorer (injected async embedder, cached profile vector) | 0.6.0 |
 | 5 | Tailoring service (LLM JSON + PDF renderer, TDD) — build plan in `tailoring_build.md` (WP0–WP7, tests-as-spec) | 0.6.x |
-| 6 | Telegram approval flow (inline keyboards, PDF push) | 0.6.x |
+| 6 | Two-bot Telegram layer + approval flow (inline keyboards, PDF push) | 0.6.x |
 | 7 | JobStreet adapter (HTML parser or internal JSON endpoints, fixture-based tests) | 0.7.0 |
-| 8 | Embedding-based scoring (injected embedder) | 0.7.x |
+| 8 | Chunk-level scoring refinement (top-k / max-pool over profile chunks) | 0.7.x |
 | 9 | Application worker, approval-gated | 0.9.0 |
 | 10 | `auto_apply` flag — full autonomy per source | 1.0.0 |
 
@@ -934,7 +1053,9 @@ disallows automated access — verified live).
 ## Invariants (carried over and extended)
 
 1. The scraper never reasons. The agent never writes to the DB directly.
-   All writes go through the backend API.
+   All writes go through the backend's single validated path — the in-process
+   `JobService` facade (no self-HTTP). Only three thin inbound routes exist
+   (`/chat`, `/jobs/{id}/action`, `/jobs/{id}/follow-up`).
 2. The LLM proposes (tool calls, content selection); code validates and
    executes (FSM, Pydantic schemas, renderer).
 3. Every external dependency (LLM, embedder, HTTP, browser) is injected and
@@ -955,10 +1076,15 @@ disallows automated access — verified live).
    ghosting, the follow-up *check*) are deterministic code and never call
    the LLM. The LLM drafts content; clocks run on `status_changed_at`.
 8. Telegram is transport only — it renders and relays, never decides. No
-   business logic, no pipeline state, no conversation history in the
-   Telegram layer.
-9. The DB is the source of truth; the conversation transcript is disposable.
-   Every durable fact lives in a column (reached via a tool like
+   business logic, no pipeline state, no conversation history in either bot.
+   Two separate channels (chat + notifications) mean a push never has to yield
+   to an in-progress chat, so there is no push-coexistence gate, held-push
+   queue, or flush.
+9. The jobs DB is the source of truth; the conversation transcript is
+   disposable. Every durable fact lives in a column (reached via a tool like
    `update_status`), never solely in chat history. Wanting history to do more
    than reference-resolution is the signal a fact escaped into the transcript
-   and belongs in the DB instead. This is what makes sessions safe to clear.
+   and belongs in the DB instead. A session is never explicitly closed — it
+   simply falls out of scope when, on a later `/chat` call, the agent finds it
+   idle and starts a fresh one; nothing real is lost because nothing real lived
+   there.
