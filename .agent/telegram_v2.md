@@ -9,7 +9,9 @@ This layer is **two separate bots**, each with its own token and its own
 polling loop:
 
 - **Chat bot** — the agent's channel. Receives free-text from the user,
-  calls `POST /chat`, sends the agent's reply back. Nothing else.
+  calls `POST /chat`, and delivers the agent's reply back — text, plus any
+  attachment (typically a PDF) the agent returned in the same response.
+  Nothing else.
 - **Notifications bot** — the scheduler's outbound channel. Pushes approval
   cards, follow-up cards, digests, and notices, and receives the button
   taps from those cards (the `action` and `follow-up` endpoints). No
@@ -56,10 +58,10 @@ It does **not** own:
 
 ### The two dependency arrows (they point opposite ways and never cross)
 
-- **Push path (outbound):** the backend constructs the notifications bot's
-  `TelegramClient` and hands it to the scheduler. The scheduler invokes
-  `send_*` on it → the user. `TelegramClient` only ever pushes; it never
-  pulls, and it holds no state.
+- **Push path (outbound):** the backend constructs the
+  `NotificationTelegramClient` and hands it to the scheduler. The scheduler
+  invokes `send_*` on it → the user. It only ever pushes; it never pulls,
+  and it holds no state.
 - **Receive path (inbound):** user → Telegram servers → a bot's polling loop
   → a handler → the handler makes an **HTTP call to the backend**. Neither
   bot is handed a return-path client by the scheduler. Handlers only ever
@@ -70,9 +72,15 @@ It does **not** own:
 - `POST /chat` — the agent's channel (chat bot). In: `ChatRequest { message }`
   (required, non-empty) — nothing else; the backend's session manager and
   the agent's conversation store rebuild all context, so there is no session
-  field to pass. Out: `200` `ChatResponse { reply }`. Errors: `422`
+  field to pass. Out: `200` `ChatResponse { reply, attachments? }` — the
+  reply text plus, when the agent produced a file, its bytes as a base64
+  string per attachment (typically a tailored PDF). Errors: `422`
   missing/empty `message`; `500` if the agent raises (thin transport does
   not interpret agent failures). The only path that originates an LLM call.
+  Because the agent never speaks unprompted — every utterance is the return
+  value of an open `/chat` call — this response carries everything the agent
+  produces. The agent therefore holds no Telegram client; the chat bot, not
+  the backend, forwards any attachment on to Telegram.
 - `POST /jobs/{job_id}/action` — button tap on the notifications bot. Path
   param `job_id: integer`. In: `ActionRequest { action: UserAction }`
   (required). Out: `200` → the updated `Job` (post-transition). Errors:
@@ -98,9 +106,12 @@ It does **not** own:
 
 1. Free-text messages are sent to `POST /chat` with body `{ message }` —
    only the message, no context or session field. An empty message is
-   guarded locally before sending. The `reply` field of the response is
-   sent back to the user as-is — no parsing, no reformatting. Errors `422`
-   and `500` route through the error handler.
+   guarded locally before sending. On `200` the bot delivers the response
+   to the user: it sends `reply` as text, then, if `attachments` is present
+   and non-empty, base64-decodes each attachment and sends it as a document
+   (the expected file type is PDF). The reply text is sent as-is — no
+   parsing, no reformatting. Errors `422` and `500` route through the error
+   handler.
 2. `/start` is Telegram's conventional first-contact command. It sends the
    static greeting (`"What can I do for you today?"`) locally and signals
    nothing to the backend. There is no `/end` command and no session
@@ -125,13 +136,20 @@ It does **not** own:
    - follow-up path: `422` (bad body), `404` (no job), `409` (job not
      `APPLIED`).
 
-**Notifications bot — outbound (scheduler → bot):**
+**Chat bot — outbound send surface (`ChatTelegramClient`):**
 
-5. `send_message(text)` — plain text. Used by digest, ghost notice, and any
+5. `send_message(text)` — plain text; the agent's `reply`.
+6. `send_document(text, pdf_bytes)` — a decoded attachment (PDF) from the
+   `/chat` response, delivered as a document.
+
+**Notifications bot — outbound send surface (`NotificationTelegramClient`,
+called by the scheduler):**
+
+7. `send_message(text)` — plain text. Used by digest, ghost notice, and any
    simple notification.
-6. `send_document(text, pdf_bytes)` — text + PDF attachment. Used by the
+8. `send_document(text, pdf_bytes)` — text + PDF attachment. Used by the
    tailor job for `PENDING_APPROVAL` pushes.
-7. `send_message_with_keyboard(text, keyboard)` — text + inline keyboard.
+9. `send_message_with_keyboard(text, keyboard)` — text + inline keyboard.
    Used by the tailor job (`[Mark Applied] [Skip]`) and follow-up job
    (`[Sent it] [Skip]`).
 
@@ -145,13 +163,13 @@ The approval card uses `[Mark Applied]` → `APPLIED`, `[Skip]` →
 
 **Both bots:**
 
-8. Only one authorised user. Any update (message, callback, command) from an
-   unrecognised `chat_id` is logged as a warning and ignored — no reply
-   sent. Same guard on both bots.
-9. A failed backend HTTP call on any inbound path logs the error via loguru
-   and sends the user a plain text error message — never a silent failure.
-   This includes surfacing `422`, `404`, `409`, and `500` as readable
-   messages rather than raw status codes.
+10. Only one authorised user. Any update (message, callback, command) from
+    an unrecognised `chat_id` is logged as a warning and ignored — no reply
+    sent. Same guard on both bots.
+11. A failed backend HTTP call on any inbound path logs the error via loguru
+    and sends the user a plain text error message — never a silent failure.
+    This includes surfacing `422`, `404`, `409`, and `500` as readable
+    messages rather than raw status codes.
 
 ---
 
@@ -172,10 +190,37 @@ discriminator selects the endpoint; `kind: "action"` buttons also carry a
 {"kind": "dismiss", "job_id": 42}
 ```
 
-**Outbound interface (notifications bot — what the scheduler calls):**
+**`ChatResponse` shape** (chat bot) — the `/chat` response body:
+
+```json
+{
+  "reply": "Here is your tailored resume.",
+  "attachments": [
+    {"filename": "resume.pdf", "content_b64": "<base64 string>", "mime": "application/pdf"}
+  ]
+}
+```
+
+`attachments` is optional and may be absent, empty, or carry one or more
+files. Each file's bytes are a base64 string the chat bot decodes before
+sending as a document. Expected type is PDF.
+
+**Outbound interfaces — one client class per bot, no shared class.**
+
+Chat bot (`ChatTelegramClient`) — delivers the agent's reply and any
+decoded attachment:
 
 ```python
-class TelegramClient:
+class ChatTelegramClient:
+    async def send_message(self, text: str) -> None: ...
+    async def send_document(self, text: str, pdf_bytes: bytes) -> None: ...
+```
+
+Notifications bot (`NotificationTelegramClient`) — the scheduler's push
+surface:
+
+```python
+class NotificationTelegramClient:
     async def send_message(self, text: str) -> None: ...
     async def send_document(self, text: str, pdf_bytes: bytes) -> None: ...
     async def send_message_with_keyboard(
@@ -183,15 +228,16 @@ class TelegramClient:
     ) -> None: ...
 ```
 
-`chat_id` is never a parameter — it is a config value baked into the client
+`chat_id` is never a parameter — it is a config value baked into each client
 at construction. Each bot talks to one user. No nudge method, no tracked
-`message_id`, no `clear_nudge` — the two-bot split removed all of it.
+`message_id`, no `clear_nudge` — the two-bot split removed all of it. Both
+clients are stateless.
 
 **Backend calls each bot makes (inbound path):**
 
 | Bot | Trigger | Method | Endpoint | Body / result |
 |---|---|---|---|---|
-| Chat | free-text | POST | `/chat` | in `{ message }` → out `{ reply }`; `422` empty, `500` agent raised |
+| Chat | free-text | POST | `/chat` | in `{ message }` → out `{ reply, attachments? }`; `422` empty, `500` agent raised |
 | Notifications | `kind: action` | POST | `/jobs/{job_id}/action` | in `{ action }` → `Job`; `422`/`404`/`409` |
 | Notifications | `kind: followup` | POST | `/jobs/{job_id}/follow-up` | in `{}` → `Job`; `422`/`404`/`409` |
 | Notifications | `kind: dismiss` | — | — | acknowledge, no call |
@@ -213,25 +259,31 @@ Read the two tokens (`TELEGRAM_CHAT_BOT_TOKEN`,
 `TELEGRAM_NOTIFICATIONS_BOT_TOKEN`) and `TELEGRAM_CHAT_ID` from settings.
 Build two `Application` instances with their own polling loops, wire the
 chat handlers onto one and the notification handlers onto the other, both
-behind the shared auth guard. Construct the notifications `TelegramClient`
-(for the scheduler's push path) and the two backend HTTP clients. Register
-in the FastAPI lifespan hook alongside APScheduler; verify each bot with
-`get_me()`. Returns the notifications `TelegramClient`.
+behind the shared auth guard. Construct both send clients
+(`ChatTelegramClient`, `NotificationTelegramClient`) and both backend HTTP
+clients, stashing each on the right app's `bot_data`. Register in the
+FastAPI lifespan hook alongside APScheduler; verify each bot with
+`get_me()`. Returns the `NotificationTelegramClient` for the scheduler's
+push path.
 
 **WP-T2: Auth guard (shared)**
 One guard, applied on every inbound update of both bots — if `chat_id` does
 not match `TELEGRAM_CHAT_ID`, log a warning and ignore. No reply sent.
 
-**WP-T3: Outbound interface (notifications bot)**
-Implement `TelegramClient` with the three send primitives. Stateless.
-Unit-testable by mocking the `python-telegram-bot` `Bot` object's send
-calls.
+**WP-T3: Outbound interfaces (both bots)**
+Implement `ChatTelegramClient` (`send_message`, `send_document`) and
+`NotificationTelegramClient` (`send_message`, `send_document`,
+`send_message_with_keyboard`). Two distinct classes, no shared base; each
+constructed against its own bot and token. Both stateless. Unit-testable by
+mocking the `python-telegram-bot` `Bot` object's send calls.
 
 **WP-T4: Chat handler (chat bot)**
-Handle free-text — guard non-empty, POST `{ message }` to `/chat`, read
-`reply`, send it back via `send_message`. Also handle `/start`: send the
-static greeting locally, no backend call. No history, no session, no state.
-Failures route through WP-T6.
+Handle free-text — guard non-empty, POST `{ message }` to `/chat`. On `200`,
+send `reply` via `ChatTelegramClient.send_message`; then, if `attachments`
+is present and non-empty, base64-decode each and send it via
+`send_document` (expected type PDF). Also handle `/start`: send the static
+greeting locally, no backend call. No history, no session, no state.
+`422`/`500`/transport failures route through WP-T6.
 
 **WP-T5: Button callback handler (notifications bot)**
 Handle `callback_query` updates — parse `callback_data`, branch on `kind`
@@ -258,15 +310,18 @@ rather than raw codes. Used by both bots' handlers.
    `422`/`404`/`409`/`500`; assert each is logged and a plain readable
    message is sent.
 
-3. **WP-T3 (outbound interface)** — before the notification handler and
-   before wiring the scheduler's push path. Test: mock `send_message`,
-   `send_document`, `send_message_with_keyboard` on the `Bot` object.
+3. **WP-T3 (outbound interfaces)** — before the handlers and before wiring
+   the scheduler's push path. Test both clients by mocking the `Bot` object:
+   `ChatTelegramClient` (`send_message`, `send_document`) and
+   `NotificationTelegramClient` (all three primitives).
 
-4. **WP-T4 (chat handler)** — once T2, T6 exist. Test: mock `POST /chat`,
-   assert `{ message }` is forwarded (no extra fields), `reply` is sent via
-   `send_message`; assert an empty message is guarded before sending; assert
-   `/start` sends the greeting with no backend call; `422`/`500` route
-   through T6.
+4. **WP-T4 (chat handler)** — once T2, T3, T6 exist. Test: mock `POST /chat`,
+   assert `{ message }` is forwarded (no extra fields); on a reply-only
+   response, `reply` is sent via `send_message` and no document is sent; on
+   a response with `attachments`, each is base64-decoded and sent via
+   `send_document` after the text; assert an empty message is guarded before
+   sending; assert `/start` sends the greeting with no backend call;
+   `422`/`500` route through T6.
 
 5. **WP-T5 (button handler)** — once T2, T3, T6 exist. Test each `kind`
    branch: `action` posts `{ action }` to `/jobs/{id}/action` (body matches
@@ -277,9 +332,9 @@ rather than raw codes. Used by both bots' handlers.
 
 6. **WP-T1 (bootstrap)** — last; it composes everything. Test: mock
    `Bot.get_me()` for both tokens, assert two `Application` instances are
-   built, the right handlers are registered on each, the auth guard is
-   attached to both, and the notifications `TelegramClient` is returned for
-   the scheduler.
+   built, the right handlers and clients are registered on each, the auth
+   guard is attached to both, and the `NotificationTelegramClient` is
+   returned for the scheduler.
 
 **No external dependency remains open.** All three backend contracts
 (`/chat`, `/jobs/{job_id}/action`, `/jobs/{job_id}/follow-up`) are locked.
@@ -304,9 +359,22 @@ There are no session endpoints to wait on.
 - **`/start` is a local greeting only.** It sends the static constant and
   signals nothing to the backend. Auto-open (the backend inferring a new
   session from the first `/chat`) is the real mechanism.
+- **The agent holds no Telegram client, and the chat bot forwards
+  attachments.** The agent never speaks unprompted — every utterance is the
+  return value of an open `/chat` call — so `POST /chat` returns everything
+  the agent produces: `{ reply, attachments? }`. Attachments are base64
+  strings (expected type PDF); the chat bot decodes them and sends them as
+  documents. The backend does not touch Telegram; the transport layer does
+  all sending.
+- **Two send-client classes, one per bot, no shared class.**
+  `ChatTelegramClient` (`send_message`, `send_document`) and
+  `NotificationTelegramClient` (`send_message`, `send_document`,
+  `send_message_with_keyboard`). The chat bot needs `send_document` because
+  of the `/chat` attachment; the split keeps the two bots physically
+  separate.
 - **Inbound routes to the backend over HTTP, not through the scheduler.**
-  The scheduler receives the notifications `TelegramClient` for the push
-  path but hands neither bot a return-path client.
+  The scheduler receives the `NotificationTelegramClient` for the push path
+  but hands neither bot a return-path client.
 - **A `kind` discriminator in `callback_data` selects the endpoint.**
   `action` (carries a `UserAction`, → action endpoint), `followup` (no
   action, → follow-up endpoint), `dismiss` (no-op). Needed because
@@ -327,8 +395,10 @@ There are no session endpoints to wait on.
   in `metadata`.
 - The greeting string is a hardcoded constant in this layer — not
   agent-generated, not personalised.
-- `TelegramClient` is push-only and never pulls; inbound arrives through each
-  bot's polling loop, handled by separate handler objects.
+- `NotificationTelegramClient` is push-only and never pulls;
+  `ChatTelegramClient` only ever sends in direct response to an inbound
+  `/chat` turn. Inbound arrives through each bot's own polling loop, handled
+  by separate handler objects.
 
 ---
 
@@ -347,13 +417,15 @@ telegram/
     bootstrap.py     # WP-T1: builds BOTH Application instances + clients
   chat/
     __init__.py
-    handlers.py      # WP-T4: free-text → /chat; local /start greeting
-    agent_client.py  # BackendClient for POST /chat
+    client.py        # WP-T3: ChatTelegramClient (send_message, send_document)
+    handlers.py      # WP-T4: free-text → /chat, deliver reply + attachments;
+                     #   local /start greeting
+    agent_client.py  # AgentBackendClient for POST /chat
   notifications/
     __init__.py
-    client.py        # WP-T3: TelegramClient (outbound push surface)
+    client.py        # WP-T3: NotificationTelegramClient (push surface)
     handlers.py      # WP-T5: button taps → action / follow-up endpoints
-    notify_client.py # BackendClient for action / follow-up endpoints
+    notify_client.py # NotifyBackendClient for action / follow-up endpoints
 ```
 
 ### `telegram/shared/auth.py` — WP-T2
@@ -370,11 +442,13 @@ def is_authorised(update: Update, allowed_chat_id: int) -> bool:
 
 ```python
 async def handle_backend_error(
-    client: TelegramClient, exc: Exception, context: str
+    client, exc: Exception, context: str
 ) -> None:
-    """Log via loguru and send the user a plain error message.
-    Called from either bot's handlers when a backend HTTP call fails or
-    returns 422 / 404 / 409 / 500. Maps status codes to readable text."""
+    """Log via loguru and send the user a plain error message via whichever
+    send-client the calling bot uses (ChatTelegramClient or
+    NotificationTelegramClient). Called from either bot's handlers when a
+    backend HTTP call fails or returns 422 / 404 / 409 / 500. Maps status
+    codes to readable text."""
     ...
 ```
 
@@ -386,13 +460,14 @@ def build_applications(
     notifications_bot_token: str,
     chat_id: int,
     backend_base_url: str,
-) -> tuple[Application, Application, TelegramClient]:
+) -> tuple[Application, Application, NotificationTelegramClient]:
     """Build both Application instances (chat + notifications), each with
     its own polling loop and the shared auth guard. Wire chat.handlers onto
     the chat app and notifications.handlers onto the notifications app.
-    Construct the notifications TelegramClient and the two backend clients,
-    stash them on the respective app.bot_data. Return
-    (chat_app, notifications_app, notifications_client) — the last for the
+    Construct both send clients (ChatTelegramClient,
+    NotificationTelegramClient) and both backend clients (AgentBackendClient,
+    NotifyBackendClient), stashing each on the right app.bot_data. Return
+    (chat_app, notifications_app, notification_client) — the last for the
     scheduler's push path."""
     ...
 
@@ -416,18 +491,35 @@ class AgentBackendClient:
 
     async def post_chat(self, message: str) -> dict:
         """POST /chat with {"message": message} — nothing else.
-        Returns the response body (contains `reply`).
+        Returns the response body { reply, attachments? }, where each
+        attachment carries base64-encoded bytes (expected type PDF).
         Surfaces 422 (empty message) / 500 (agent raised)."""
         ...
+```
+
+### `telegram/chat/client.py` — WP-T3
+
+```python
+class ChatTelegramClient:
+    """Send surface for the chat bot. chat_id baked in at construction.
+    Stateless — only ever sends in response to an inbound /chat turn."""
+
+    def __init__(self, bot: Bot, chat_id: int) -> None: ...
+
+    async def send_message(self, text: str) -> None: ...
+
+    async def send_document(self, text: str, pdf_bytes: bytes) -> None: ...
 ```
 
 ### `telegram/chat/handlers.py` — WP-T4
 
 ```python
 async def handle_message(update: Update, ctx: Context) -> None:
-    """Free-text → guard non-empty → AgentBackendClient.post_chat → send
-    back reply via TelegramClient.send_message. No history, no session,
-    no state. Errors route through shared.errors.handle_backend_error."""
+    """Free-text → guard non-empty → AgentBackendClient.post_chat.
+    On 200: send `reply` via ChatTelegramClient.send_message; then for each
+    item in `attachments` (if present), base64-decode and send via
+    send_document (expected PDF). No history, no session, no state.
+    Errors route through shared.errors.handle_backend_error."""
     ...
 
 async def handle_start(update: Update, ctx: Context) -> None:
@@ -440,7 +532,7 @@ GREETING = "What can I do for you today?"  # WP-T4 static constant
 ### `telegram/notifications/client.py` — WP-T3
 
 ```python
-class TelegramClient:
+class NotificationTelegramClient:
     """Outbound push surface for the notifications bot. chat_id is baked in
     at construction. Stateless — push-only, never pulls."""
 
@@ -505,10 +597,12 @@ tests/telegram/
     test_bootstrap.py  # WP-T1: two apps built, handlers + guard wired,
                        #   notifications client returned
   chat/
-    test_agent_client.py  # post_chat: 200 / 422 / 500
-    test_handlers.py      # WP-T4: message forwarding, empty guard, /start
+    test_client.py        # WP-T3: ChatTelegramClient send_message/send_document
+    test_agent_client.py  # post_chat: 200 (reply, reply+attachments) / 422 / 500
+    test_handlers.py      # WP-T4: forwarding, empty guard, /start,
+                          #   reply-only vs reply+decoded-attachment delivery
   notifications/
-    test_client.py        # WP-T3: three send primitives
+    test_client.py        # WP-T3: NotificationTelegramClient, three primitives
     test_notify_client.py # post_action / post_followup: 200 + 422/404/409
     test_handlers.py      # WP-T5: kind routing (action/followup/dismiss),
                           #   action passthrough verbatim
