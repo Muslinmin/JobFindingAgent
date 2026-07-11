@@ -20,14 +20,14 @@ Every write from every component goes through this layer.
 ## 1. Scope Boundary
 
 ### Inside this layer
-- FastAPI app skeleton + lifespan hook **mechanism** (the registration point — not the scheduled jobs themselves). The HTTP surface is now minimal (two thin routes, below); it is no longer the primary interface.
+- FastAPI app skeleton + lifespan hook **mechanism** (the registration point — not the scheduled jobs themselves). The HTTP surface is now minimal (three thin routes, below); it is no longer the primary interface.
 - Data model: the extended `jobs` table and the new `artifacts` table.
 - Repository layer — the **only** place raw SQL and driver details live (the aiosqlite → asyncpg seam).
-- Pydantic schemas + enums: `JobCreate`, `Job`, `ArtifactCreate`, `Artifact`, `Status`, `ArtifactKind`, `UserAction`.
+- Pydantic schemas + enums: `JobCreate`, `Job`, `ArtifactCreate`, `Artifact`, `Status`, `ArtifactKind`, `UserAction`, plus the thin route DTOs `ChatRequest`/`ChatResponse` (the latter carrying an `Attachment` list of base64 file bytes), `ActionRequest`, `FollowUpRequest` (request/response bodies for the three inbound routes).
 - FSM enforcement — reject illegal transitions before any write.
 - **The service layer is the real interface.** It is an in-process facade — a single object presenting one front door to the validated operations (`ingest_job`, `transition_status`, `register_artifact`, `record_follow_up`, and the read functions). "In-process" means callers run inside the same program and invoke a plain method with no network hop.
 - The facade is constructed once at the composition root (`main.py`) and injected via dependency injection into its callers: the scheduler, the agent's tools, and the tailoring consumer. There is no self-HTTP; in-process callers never call the backend over the network.
-- Exactly **two thin inbound HTTP routes** survive, both for the separate Telegram bot client (a separate device): `POST /chat` (free-form message → agent) and `POST /jobs/{job_id}/action` (a button tap → service facade, deterministic). Every other operation the old CRUD endpoints exposed is now reached in-process through the facade.
+- Exactly **three thin inbound HTTP routes** survive, all for the separate Telegram bot client (a separate device): `POST /chat` (free-form message → agent), `POST /jobs/{job_id}/action` (a button tap → `transition_status`, deterministic), and `POST /jobs/{job_id}/follow-up` (a button tap → `record_follow_up`, deterministic, record-only). Every other operation the old CRUD endpoints exposed is now reached in-process through the facade.
 
 
 
@@ -54,13 +54,13 @@ Every write from every component goes through this layer.
 6. **Serve the consumers' queries:** status-set filtering (active vs. terminal), age-based selection on `status_changed_at`, and ranked-and-limited selection — `top_scored_for_tailoring`, returning `SCORED` jobs by score, then recency, then id.
 
 
-7. **Provide exactly two thin inbound routes** — `/chat` (delegates to the agent; the only LLM origin) and `/jobs/{job_id}/action` (maps a `UserAction` to an FSM transition; deterministic, no agent). All other operations are in-process facade calls, not endpoints.
+7. **Provide exactly three thin inbound routes** — `/chat` (delegates to the agent; the only LLM origin), `/jobs/{job_id}/action` (maps a `UserAction` to an FSM transition; deterministic, no agent), and `/jobs/{job_id}/follow-up` (calls `record_follow_up`; deterministic, record-only, no status change). All other operations are in-process facade calls, not endpoints.
 
 ### Non-functional (invariants honored)
 1. Single write path; no consumer writes to the DB directly.
 2. The backend validates and executes; it never reasons. No LLM call originates here. Every operation is deterministic and unit-testable.
 3. Repository isolation — switching aiosqlite → asyncpg touches only `repository.py` / `database.py`.
-4. The two-clocks invariant is enforced **in the write operations themselves** — a follow-up write is structurally incapable of moving `status_changed_at`.
+4. The clock-separation invariant is enforced **in the write operations themselves** — a follow-up write is structurally incapable of moving `status_changed_at`, and the nudge write (`mark_follow_up_nudged`) touches only `follow_up_nudge_at`, so no lifecycle write can contaminate another's clock.
 5. No illegal histories — even an agent proposing `REJECTED → OFFER` cannot produce that row.
 6. The fingerprint is imported behind a stable signature; revising it changes no backend code.
 7. Every external dependency (fingerprint, DB) is injected and mockable.
@@ -79,7 +79,7 @@ district, `objectID`, expiry, `jobSource`) goes into `metadata`. Adding JobStree
 later adds no columns.
 
 > v1 base columns are reconstructed from references; reconcile against the actual
-> v1 schema. The v2 deltas (five lifecycle columns + `artifacts` table) are the
+> v1 schema. The v2 deltas (six lifecycle columns + `artifacts` table) are the
 > only explicit additions.
 
 #### `jobs` table
@@ -103,7 +103,8 @@ later adds no columns.
 **Lifecycle clocks & counters (v2 additions)**
 - `status_changed_at` — TEXT (ISO, UTC), NOT NULL. *The* clock for follow-up/ghost/expiry. Set = `created_at` at insert; re-stamped on every legal transition.
 - `follow_up_count` — INTEGER, NOT NULL, default 0.
-- `last_follow_up_at` — TEXT (ISO, UTC), nullable. Tracked separately so it can never touch `status_changed_at`.
+- `last_follow_up_at` — TEXT (ISO, UTC), nullable. When the **user** followed up. Tracked separately so it can never touch `status_changed_at`.
+- `follow_up_nudge_at` — TEXT (ISO, UTC), nullable. When the **scheduler pushed a follow-up reminder card**. Written only by the scheduler's push (via `mark_follow_up_nudged`), never by `record_follow_up`. Its sole purpose is to make a job qualify for a nudge exactly once: the detection read requires it to be NULL. Deliberately distinct from `last_follow_up_at` — "we reminded you" is not "you did it."
 - `seen_count` — INTEGER, NOT NULL, default 1.
 - `last_seen_at` — TEXT (ISO, UTC), NOT NULL. = `created_at` at insert; re-stamped on every duplicate ingest.
 
@@ -111,10 +112,12 @@ later adds no columns.
 - `created_at` — TEXT (ISO, UTC), NOT NULL.
 - `updated_at` — TEXT (ISO, UTC), NOT NULL (generic last-touch).
 
-> **Four timestamps, four meanings:** `updated_at` (any change), `status_changed_at`
-> (status only), `last_seen_at` (ingest sighting), `last_follow_up_at` (follow-up
-> only). Conflating any two is the bug the design warns about. They are separate
-> columns precisely so a follow-up write touches one without the other.
+> **Five timestamps, five meanings:** `updated_at` (any change), `status_changed_at`
+> (status only), `last_seen_at` (ingest sighting), `last_follow_up_at` (the user
+> followed up), `follow_up_nudge_at` (the system pushed a reminder). Conflating any
+> two is the bug the design warns about — especially the last two, which are "you
+> did it" versus "we reminded you." They are separate columns precisely so each
+> write touches one without the others.
 
 #### `artifacts` table
 - `id` — INTEGER, PK.
@@ -200,7 +203,7 @@ of two paths.
 - From `JobCreate`: `company`, `title`, `description`, `url`, `posted_at?`, `metadata?`.
 - `fingerprint` ← computed.
 - `status = DISCOVERED`, `score = NULL`.
-- `seen_count = 1`, `follow_up_count = 0`, `last_follow_up_at = NULL`.
+- `seen_count = 1`, `follow_up_count = 0`, `last_follow_up_at = NULL`, `follow_up_nudge_at = NULL`.
 - `created_at = updated_at = status_changed_at = last_seen_at = now (UTC)`.
 
 **Duplicate hit (fingerprint exists) → update liveness only:**
@@ -280,14 +283,19 @@ are just how the routes render them.
 - Out: updated `Job`.
 - Does: increment `follow_up_count`, stamp `last_follow_up_at = now`, `updated_at = now`. **Cannot** touch `status` or `status_changed_at`. Requires `status == APPLIED`, else `409` (Decision B).
 
+**`mark_follow_up_nudged(job_id) -> Job` — record that a reminder was pushed (scheduler-only)**
+- In: `job_id`.
+- Out: updated `Job`.
+- Does: stamp `follow_up_nudge_at = now`, `updated_at = now`, and nothing else. **Cannot** touch `status`, `status_changed_at`, `follow_up_count`, or `last_follow_up_at`. Called in-process by the scheduler immediately after it successfully pushes a follow-up card, so the job drops out of the follow-up detection read and is never re-drafted. This is the nudge clock's only writer; it is deliberately separate from `record_follow_up` (system reminded vs. user acted). No HTTP route — the scheduler is in-process.
+
 ---
 
-**Inbound HTTP routes (exactly two — the Telegram bot client's only doors in):**
+**Inbound HTTP routes (exactly three — the Telegram bot client's only doors in):**
 
 **`POST /chat` — agent transport (thin)**
-- In: `{ message, ...context }`.
-- Out: `{ reply, ... }`.
-- Does: hand to the agent, return its reply. Backend owns the route; the agent owns the body. Stateless per call — each call keeps nothing in memory from the previous one, which is why the agent rebuilds context from the conversation store (see §3f). The **only** place an LLM call originates.
+- In: `{ message }`.
+- Out: `{ reply, attachments? }` — text plus, when the agent produced a file, its bytes (see the contract for the encoding).
+- Does: hand to the agent, return its reply. Backend owns the route; the agent owns the body. Stateless per call — each call keeps nothing in memory from the previous one, which is why the agent rebuilds context from the conversation store (see §3f). The **only** place an LLM call originates. Because the agent never speaks unprompted (every utterance is a reply to an open `/chat` call), this response carries **everything** the agent produces — so the agent holds no Telegram client, and the bot, not the backend, forwards any attachment on to Telegram.
 
 **`POST /jobs/{job_id}/action` — button tap (deterministic; mirror of `/chat`)**
 - In: `{ action: UserAction }`.
@@ -312,6 +320,66 @@ Phase 1 vocabulary (from the `user`-triggered rows of the 3b transition table):
 `REJECTED`. Phase 2 adds `APPLYING` and the `APPLY_FAILED`-sourced actions
 (deferred; the enum has a documented place to grow).
 
+**`POST /jobs/{job_id}/follow-up` — record a follow-up (deterministic; record-only)**
+- In: `{ note? }` (optional).
+- Out: updated `Job`.
+- Does: the thin handler calls `record_follow_up` and nothing else — increment `follow_up_count`, stamp `last_follow_up_at = now`. No agent, no language model. Requires `status == APPLIED`, else `409` (Decision B). This is a **separate route from `/action` on purpose**: recording a follow-up is deliberately *not* a status change and must never touch `status` or `status_changed_at` (it does not reset the ghost clock), so folding it into `/action` would force a branch inside a handler whose whole value is a single clean mapping. The user reaches this by tapping "Mark as followed up" on a follow-up card, after sending the email themselves from their own mail client.
+
+> **Out-of-scope seam — the follow-up drafting service.** The email itself is
+> written by a shared `FollowUpDraftingService`, a sibling of the tailoring service:
+> constructed once at the composition root, injected into the scheduler, owning the
+> LiteLLM call. It is **not** a method on `JobService` and is **not** specified in
+> this document — the backend never reasons. The scheduler drafts (via this service)
+> *before* it pushes the card, so the pushed card already carries the finished
+> draft; this route only records that the user acted on it. The drafting service
+> gets its own spec, as tailoring did.
+
+**Route contracts (formal).** The prose above gives intent; this pins the wire
+contract. Shared conventions apply to all three routes:
+
+- **Method & encoding:** HTTP `POST`, JSON request body, JSON response body, `Content-Type: application/json` both ways.
+- **Auth:** none in Phase 1 (out of scope until 1.0.0), so these routes must stay bound to a local/trusted network reachable only by the bot client — there is no other guard in front of the write path.
+- **`job_id` path parameter:** integer, matches `jobs.id`; a non-integer value fails path validation with `422`.
+- **`Job` response body:** the full `jobs` row exactly as defined in 3a — every typed column, all timestamps ISO-8601 UTC. Not a projection.
+- **Error body:** `{ "detail": <string> }` (FastAPI default). The exception-to-status mapping is centralized in the app's exception handlers (WP-E), so route handlers stay thin and never build these by hand.
+
+**Contract 1 — `POST /chat`**
+- Path params: none.
+- Request: `ChatRequest { message: string (required, non-empty) }`. Context is rebuilt by the agent from the conversation store, so the client sends only the message; there is no session field to pass.
+- Success: `200` → `ChatResponse { reply: string, attachments: Attachment[] = [] }`, where `Attachment { kind: ArtifactKind, filename: string, mime_type: string, content: string }` and `content` is the file's raw bytes **base64-encoded** (base64 = binary written as text so it survives inside JSON, which cannot hold raw bytes). `attachments` is empty on a text-only reply.
+- **Why bytes, not a path:** the bot runs on a separate machine and cannot resolve a backend filesystem path, so the response must carry the bytes themselves. The bot decodes each attachment and streams it to Telegram; the backend still never talks to Telegram. Inline base64 is chosen because the artifacts are small PDFs, where the ~⅓ size inflation is negligible and one request/one response is simplest. (A reference-plus-download-route alternative is recorded in §7 for when artifacts outgrow inline encoding.)
+- Errors: `422` missing/empty `message`; `500` if the agent raises (the route is thin transport and does not interpret agent failures).
+- Calls: the agent. This is the only route that may originate an LLM call.
+
+**Contract 2 — `POST /jobs/{job_id}/action`**
+- Path params: `job_id: integer`.
+- Request: `ActionRequest { action: UserAction (required) }`. `UserAction` is the restricted enum; any value outside it is rejected at parsing.
+- Success: `200` → `Job` (the updated row, post-transition).
+- Errors: `422` body invalid or `action` not a `UserAction` member; `404` no job with `job_id` (`JobNotFoundError`); `409` the mapped transition is illegal from the job's current state (`InvalidTransitionError`).
+- Calls: `transition_status(job_id, target)` after mapping `action` → target `Status`.
+
+**Contract 3 — `POST /jobs/{job_id}/follow-up`**
+- Path params: `job_id: integer`.
+- Request: `FollowUpRequest { note: string | null = null }`. The body may be empty (`{}`).
+- Success: `200` → `Job` (the updated row: `follow_up_count` incremented, `last_follow_up_at` stamped, `status_changed_at` unchanged).
+- Errors: `422` `note` present but not a string; `404` no job with `job_id` (`JobNotFoundError`); `409` job is not `APPLIED` (`InvalidStateError`, Decision B).
+- Calls: `record_follow_up(job_id, note)`.
+
+**Exception → status mapping (centralized, WP-E).** One table drives every route's
+error rendering:
+
+| Condition | Raised by | HTTP | Body `detail` |
+|---|---|---|---|
+| Malformed body / out-of-vocabulary `action` / bad path type | Pydantic (pre-handler) | `422` | validation message |
+| No job with that `job_id` | `JobNotFoundError` | `404` | "job not found" |
+| Illegal/out-of-state status transition | `InvalidTransitionError` | `409` | transition message |
+| Follow-up on a non-`APPLIED` job | `InvalidStateError` | `409` | precondition message |
+| Agent failure or any unhandled error | (uncaught) | `500` | generic |
+
+`422` needs no handler (FastAPI raises it during request parsing, before the route
+body runs); the `404` and the two `409`s are the handlers WP-E must register, since
+without them those facade exceptions would escape as `500`.
+
 **Decision A — artifact registration is decoupled from the status move.**
 `register_artifact` only registers. The tailoring consumer then calls
 `transition_status` separately (`SCORED → TAILORED → PENDING_APPROVAL`, or
@@ -330,7 +398,7 @@ action) and keeps the operation consistent with "the backend validates."
 
 Every DB read is a repository function (the only place SQL lives). Two shapes:
 - **General-purpose:** "list jobs by status, paginated." Backs the agent's `query_jobs` tool, called in-process through the `query_jobs` facade method. There is no public HTTP read endpoint — the old `GET /jobs` is removed along with the rest of the CRUD surface.
-- **Specific, rule-bound, named functions:** `top_scored_for_tailoring` (top-N `SCORED`, ordered by score → recency → id, surfaced on the facade for the tailoring consumer); `PENDING_APPROVAL` older than expiry; `APPLIED`/`INTERVIEWING` older than ghost window; `APPLIED` older than follow-up window with `follow_up_count = 0`. Called in-process by the scheduled jobs and the tailoring consumer; each has a precise typed signature and is unit-tested directly.
+- **Specific, rule-bound, named functions:** `top_scored_for_tailoring` (top-N `SCORED`, ordered by score → recency → id, surfaced on the facade for the tailoring consumer); `PENDING_APPROVAL` older than expiry; `APPLIED`/`INTERVIEWING` older than ghost window; `APPLIED` older than the follow-up window with `follow_up_count = 0` **and `follow_up_nudge_at IS NULL`** (the null-check makes a job qualify for a reminder exactly once, so the scheduler never re-drafts and re-pushes the same nudge every cycle). Called in-process by the scheduled jobs and the tailoring consumer; each has a precise typed signature and is unit-tested directly.
 
 Decision: do **not** build one over-configurable query for both. General stays
 general; each pipeline-critical query is its own named function. The LLM never
@@ -414,7 +482,7 @@ app/
 │   └── service.py           # validated ops: ingest_job, transition_status, …    (WP-D)
 └── routers/
     ├── __init__.py
-    └── routes.py            # two thin routes only: /chat + /jobs/{id}/action    (WP-E)
+    └── routes.py            # 3 thin routes: /chat, /action, /follow-up          (WP-E)
 
 tests/
 ├── __init__.py
@@ -432,8 +500,8 @@ tests/
 - `job.py` (extend) — Pydantic I/O models: `JobCreate`, `StatusUpdate`, `JobResponse`, `ArtifactCreate`, `ArtifactResponse` (enums imported from `enums.py`).
 - `database.py` (extend) — connection handling, startup pragmas (`foreign_keys = ON`; WAL noted for 0.7.0), DDL for the extended `jobs` table, the `artifacts` table, and the unique `fingerprint` index.
 - `repository.py` (extend) — all SQL: upsert, status write, artifact insert, follow-up update, general list query, named scheduler queries.
-- `service.py` (new) — the injected facade of shared validated operations that both the two routes and all in-process callers invoke.
-- `routes.py` (extend) — exactly two thin routes: `/chat` (→ agent) and `/jobs/{job_id}/action` (→ `transition_status` via the facade, after mapping `UserAction` → target status). No CRUD endpoints.
+- `service.py` (new) — the injected facade of shared validated operations that both the three routes and all in-process callers invoke.
+- `routes.py` (extend) — exactly three thin routes: `/chat` (→ agent), `/jobs/{job_id}/action` (→ `transition_status` via the facade, after mapping `UserAction` → target status), and `/jobs/{job_id}/follow-up` (→ `record_follow_up`). No CRUD endpoints.
 - `main.py` (extend) — app creation, router includes, lifespan DB-init.
 - `config.py` (minor) — DB path + pragmas. Pipeline thresholds belong to consumer layers.
 
@@ -443,11 +511,11 @@ tests/
 
 **WP-B — FSM.** Realizes 3b (the state-machine portion of `enums.py`). Pure logic, zero I/O — the cleanest unit. Unit-tested: every legal edge passes, every illegal edge rejected, `INTERVIEWING` self-loop allowed, terminal states have no exits. Built alongside the enums.
 
-**WP-C — Repository.** Realizes 3c persistence + the named reads (`repository.py`). Atomic `ON CONFLICT` upsert, status write, artifact insert, follow-up update, general list query, the `top_scored_for_tailoring` ranking read, and the scheduler window queries. Unit-tested against a temp SQLite seeded with known rows: upsert inserts-then-bumps `seen_count`; follow-up update leaves `status_changed_at` untouched; the ranking read returns only `SCORED` rows in score → recency → id order; each scheduler query returns the right subset/order. Fingerprint injected and mocked. Depends on WP-A.
+**WP-C — Repository.** Realizes 3c persistence + the named reads (`repository.py`). Atomic `ON CONFLICT` upsert, status write, artifact insert, follow-up update, nudge-marker update (`follow_up_nudge_at`), general list query, the `top_scored_for_tailoring` ranking read, and the scheduler window queries. Unit-tested against a temp SQLite seeded with known rows: upsert inserts-then-bumps `seen_count`; follow-up update leaves `status_changed_at` untouched; the nudge-marker update sets only `follow_up_nudge_at`; the follow-up detection read excludes rows already nudged (`follow_up_nudge_at IS NOT NULL`); the ranking read returns only `SCORED` rows in score → recency → id order; each scheduler query returns the right subset/order. Fingerprint injected and mocked. Depends on WP-A.
 
-**WP-D — Service facade.** Realizes 3d orchestration (`service.py`): `ingest_job` (fingerprint via injected fn → repository upsert), `transition_status` (read current → FSM validate → write), `query_jobs`, `top_scored_for_tailoring` (thin wrapper over the ranking read), `register_artifact`, `record_follow_up`. This is the injected in-process facade on which the two routes, the agent tools, the scheduler, and the tailoring consumer all converge — there is no self-HTTP. Unit-tested by mocking the repository + fingerprint and asserting call order + that an illegal transition is refused before any write. Depends on WP-B and WP-C.
+**WP-D — Service facade.** Realizes 3d orchestration (`service.py`): `ingest_job` (fingerprint via injected fn → repository upsert), `transition_status` (read current → FSM validate → write), `query_jobs`, `top_scored_for_tailoring` (thin wrapper over the ranking read), `register_artifact`, `record_follow_up`, `mark_follow_up_nudged` (stamps `follow_up_nudge_at` only). This is the injected in-process facade on which the three routes, the agent tools, the scheduler, and the tailoring consumer all converge — there is no self-HTTP. Unit-tested by mocking the repository + fingerprint and asserting call order + that an illegal transition is refused before any write. Depends on WP-B and WP-C.
 
-**WP-E — Inbound routes.** Realizes the two thin routes of 3d (`routes.py`): `/chat` (forwards to the agent) and `/jobs/{job_id}/action` (parses `UserAction`, maps it to a target status, calls `transition_status`). Deliverable includes the exception handlers that render facade errors as status codes — `InvalidTransitionError → 409`, job-not-found → 404 (an out-of-vocabulary action already yields `422` from Pydantic parsing, so it needs no handler); without them an illegal tap escapes as an unhandled `500`. Tested with three mock-facade mapping tests (409 / 422 / 404, no database) plus one real-database happy-path test (a legal `INTERVIEWING` tap returns `200` with the updated `Job`) that proves the whole path wires together. `/chat` is tested with a mocked agent, asserting only the forwarding contract. Depends on WP-D.
+**WP-E — Inbound routes.** Realizes the three thin routes of 3d (`routes.py`): `/chat` (forwards to the agent), `/jobs/{job_id}/action` (parses `UserAction`, maps it to a target status, calls `transition_status`), and `/jobs/{job_id}/follow-up` (calls `record_follow_up`; record-only). Deliverable includes the exception handlers that render facade errors as status codes — `InvalidTransitionError → 409`, follow-up-on-non-`APPLIED` → 409, job-not-found → 404 (an out-of-vocabulary action already yields `422` from Pydantic parsing, so it needs no handler); without them an illegal tap escapes as an unhandled `500`. Tested with mock-facade mapping tests (`/action`: 409 / 422 / 404; `/follow-up`: 409 on non-`APPLIED`) plus one real-database happy-path test per state-touching route (a legal `INTERVIEWING` tap returns `200` with the updated `Job`; a follow-up on an `APPLIED` job returns `200` with `follow_up_count` incremented and `status_changed_at` unchanged) proving the path wires together. `/chat` is tested with a mocked agent, asserting only the forwarding contract. Depends on WP-D.
 
 **WP-F — App wiring.** App skeleton in `main.py`: create app, include routers, lifespan DB-init (scheduler registration sits in the hook, but the jobs themselves are the scheduling layer — only the mechanism is here). Startup integration test: boot the app, confirm schema created and routes respond. Depends on WP-E.
 
@@ -564,17 +632,28 @@ async def test_action_not_found_maps_to_404(client, mock_service):
     mock_service.transition_status.side_effect = JobNotFoundError(...)
     r = await client.post("/jobs/unknown/action", json={"action": "INTERVIEWING"})
     assert r.status_code == 404
+
+async def test_follow_up_on_non_applied_maps_to_409(client, mock_service):
+    mock_service.record_follow_up.side_effect = InvalidStateError(...)
+    r = await client.post("/jobs/any-id/follow-up", json={})
+    assert r.status_code == 409
 ```
 
-*Wiring test — real app over a temp DB.* One happy-path test proves the route
-genuinely reaches the facade, a real `APPLIED` job is loaded, the real FSM permits
-the move, and the updated row is serialized back — the class of bug the mocked
-tests cannot catch (route silently not calling the facade, facade not injected):
+*Wiring tests — real app over a temp DB.* One happy-path test per state-touching
+route proves the route genuinely reaches the facade, a real row is loaded and
+written, and the result is serialized back — the class of bug the mocked tests
+cannot catch (route silently not calling the facade, facade not injected):
 ```python
 async def test_action_legal_transitions_and_returns_job(client, applied_job):
     r = await client.post(f"/jobs/{applied_job.id}/action",
                           json={"action": "INTERVIEWING"})
     assert r.status_code == 200 and r.json()["status"] == "INTERVIEWING"
+
+async def test_follow_up_records_without_touching_status_clock(client, applied_job):
+    r = await client.post(f"/jobs/{applied_job.id}/follow-up", json={})
+    body = r.json()
+    assert r.status_code == 200 and body["follow_up_count"] == 1
+    assert body["status_changed_at"] == applied_job.status_changed_at  # ghost clock intact
 ```
 
 The `/chat` route is tested with a **mocked agent**, asserting only the forwarding
@@ -582,8 +661,8 @@ contract (message passed through, agent's reply returned) — never a real LLM c
 inside a route test.
 
 **WP-F — App wiring** (startup integration). Boot the app through the lifespan
-hook, confirm the schema exists and the two routes are mounted (`/chat` and
-`/jobs/{id}/action` respond rather than 404).
+hook, confirm the schema exists and the three routes are mounted (`/chat`,
+`/jobs/{id}/action`, and `/jobs/{id}/follow-up` respond rather than 404).
 
 **E2E (minimal, ~5%):** one thin slice — `ingest_job` in-process, then a legal
 `/action` sequence over HTTP, then read the row back via `query_jobs`. Reuses the
@@ -597,11 +676,11 @@ belongs at the overview level, not here.
 1. The scraper never reasons; the agent never writes to the DB directly. All writes go through the backend's single validated path.
 2. The LLM proposes; the backend validates and executes (FSM, Pydantic, repository). No LLM call originates in this layer.
 3. Every external dependency (fingerprint, DB) is injected and mocked in tests.
-4. The two-clocks rule is physical: follow-up writes cannot move `status_changed_at`; re-sightings cannot move it either.
+4. The clocks rule is physical: follow-up writes cannot move `status_changed_at`; re-sightings cannot move it either; and the nudge clock `follow_up_nudge_at` is written *only* by `mark_follow_up_nudged` (the scheduler's push), never by `record_follow_up` — "we reminded you" and "you followed up" are separate columns with separate writers.
 5. Repository pattern isolation — a DB-driver switch touches only `repository.py` / `database.py`.
 6. Timestamps are ISO-8601 UTC everywhere.
 7. The service facade is the real interface; in-process callers invoke it directly through dependency injection and never call the backend over HTTP.
-8. Exactly two inbound HTTP routes exist. `/chat` is the single origin of any LLM call; `/jobs/{job_id}/action` is deterministic and never invokes the agent. No CRUD endpoints are exposed.
+8. Exactly three inbound HTTP routes exist. `/chat` is the single origin of any LLM call; `/jobs/{job_id}/action` and `/jobs/{job_id}/follow-up` are both deterministic and never invoke the agent. `/action` changes status; `/follow-up` records a follow-up and never touches `status` or `status_changed_at`; the two stay separate routes. No CRUD endpoints are exposed.
 9. `UserAction` is strictly narrower than `Status`: a button tap can only ever target a user-legal state, and can never request a system-only state (e.g. `SCORED`, `TAILORED`).
 10. Outbound notifications leave via the notifications bot directly, off the HTTP surface; only the button reply returns, through `/action`. No push-coexistence gate, activity signal, or held-push queue exists — the scheduler and the conversation store never touch.
 
@@ -612,4 +691,6 @@ belongs at the overview level, not here.
 - **SQLite single-writer constraint** — named, not solved. One writer at a time across the whole file; concurrent writes (scrape burst vs. a user-triggered tool call) yield `SQLITE_BUSY`. Invisible at dev scale. Mitigations (0.7.0 reliability): WAL mode, `busy_timeout`, short write transactions, optionally a single writer connection/queue. The single validated write path pre-positions this fix to one place.
 - **Button-tap transport** — whether the Telegram bot client polls and forwards taps to `/action`, or the notifications bot uses a webhook straight to the backend. Settled in the Telegram layer spec (see §3e).
 - **Conversation store** — the second SQLite database and `conversation/` package are referenced here (§3f) but specified in `conversation_store_v2.md`.
+- **Attachment delivery via a download route** — the `/chat` response returns attachment bytes inline as base64, which suits the small PDFs of Phase 1. If artifacts grow large, or another caller needs to fetch them, switch to a reference-plus-fetch shape: `ChatResponse` returns an artifact `id`, and a new streaming route `GET /artifacts/{artifact_id}` returns the raw bytes. This keeps the JSON small and enables real streaming, at the cost of a second round trip and a fourth route. Deferred; the inline form is the current contract.
+- **Follow-up re-nudging** — the follow-up detection read nudges each job exactly once (`follow_up_nudge_at IS NULL`). If an ignored reminder should later be re-sent after a cooldown, swap that clause for "null or older than the cooldown window." Deferred as a documented option; not built now.
 - **v1 file layout reconciliation** — confirm actual filenames/structure against §4.
