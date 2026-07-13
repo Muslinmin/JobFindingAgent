@@ -1,6 +1,12 @@
 from enum import Enum
 
 
+class ArtifactKind(str, Enum):
+    CV_PDF = "cv_pdf"
+    COVER_LETTER = "cover_letter"
+    FOLLOW_UP_EMAIL = "follow_up_email"
+
+
 class ApplicationStatus(str, Enum):
     DISCOVERED = "discovered"
     SCORED = "scored"

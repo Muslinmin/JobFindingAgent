@@ -513,9 +513,13 @@ tests/
 
 ### Work packages
 
-**WP-A — Data model.** Realizes 3a (`job.py` models; `database.py` DDL). Unit-tested: model validation (required fields; `JobCreate` rejects `status`/`score` via `extra="forbid"`; timestamps serialize ISO-UTC) + a round-trip test that builds the schema in a temp SQLite and confirms both tables and the unique fingerprint index. No dependencies.
+~~**WP-A — Data model.** Realizes 3a (`job.py` models; `database.py` DDL). Unit-tested: model validation (required fields; `JobCreate` rejects `status`/`score` via `extra="forbid"`; timestamps serialize ISO-UTC) + a round-trip test that builds the schema in a temp SQLite and confirms both tables and the unique fingerprint index. No dependencies.~~
+**✅ DONE.** `job.py` rewritten: `JobCreate`, `Job`, `ArtifactCreate`, `Artifact` (field named `role`, per the v1-reconciliation note, not `title`). `ArtifactKind` added to `enums.py`. `database.py` DDL extended: full `jobs` table (all lifecycle columns) + new `artifacts` table + `PRAGMA foreign_keys = ON`. `src/test/unit/test_job.py` — 12/12 passing (combined with WP-B: 45/45).
+**Collateral cleanup done alongside this step:** the old CRUD `app/routes/jobs.py` (POST/GET/PATCH/DELETE `/jobs`) was deleted — it's explicitly removed by this spec (§3d, invariant 8: "No CRUD endpoints exposed") and its broken v1-shape imports were blocking test collection for the whole suite via `conftest.py → main.py`. `main.py`'s router include was updated accordingly. Superseded v1 tests deleted alongside: `test_schemas.py` (old `job.py` shape), `test_scoring_ingestion.py` (only exercised the deleted CRUD route with v1 keyword-overlap scoring, itself superseded by v2's embedding scorer).
+**Still known-broken, expected, deferred to their own WPs (not fixed here):** `test_repository.py` (WP-C), `test_routes.py` / `test_crud_pipeline.py` (WP-E), `test_scheduler.py` / `test_scheduler_wiring.py` (scheduling layer), `test_tools.py` / `test_search_tool_executor.py` (agent layer — `agent_v2.md`). `test_digest_job.py` / `test_scrape_job.py` were already broken before this work (pre-existing `jobs` module reference), unrelated to backend_v2.md.
 
-**WP-B — FSM.** Realizes 3b (the state-machine portion of `enums.py`). Pure logic, zero I/O — the cleanest unit. Unit-tested: every legal edge passes, every illegal edge rejected, `INTERVIEWING` self-loop allowed, terminal states have no exits. Built alongside the enums.
+~~**WP-B — FSM.** Realizes 3b (the state-machine portion of `enums.py`). Pure logic, zero I/O — the cleanest unit. Unit-tested: every legal edge passes, every illegal edge rejected, `INTERVIEWING` self-loop allowed, terminal states have no exits. Built alongside the enums.~~
+**✅ DONE.** `enums.py` rewritten: 15-state `ApplicationStatus`, `VALID_TRANSITIONS`, `can_transition`, `legal_targets`, `transition`, `InvalidTransitionError`. `src/test/unit/test_enums.py` — 33/33 passing. The obsolete v1 `src/test/test_state_machine.py` (asserted pre-v2 semantics, e.g. self-loop illegal) was deleted as superseded. `ArtifactKind`/`UserAction` are **not yet added** to `enums.py` — still open.
 
 **WP-C — Repository.** Realizes 3c persistence + the named reads (`repository.py`). Atomic `ON CONFLICT` upsert, status write, artifact insert, follow-up update, nudge-marker update (`follow_up_nudge_at`), general list query, the `find_jobs` lookup read, the `top_scored_for_tailoring` ranking read, and the scheduler window queries. Unit-tested against a temp SQLite seeded with known rows: upsert inserts-then-bumps `seen_count`; follow-up update leaves `status_changed_at` untouched; the nudge-marker update sets only `follow_up_nudge_at`; the follow-up detection read excludes rows already nudged (`follow_up_nudge_at IS NOT NULL`); `find_jobs` returns rows on a case-insensitive partial `title` match, narrows on `company`, and searches all statuses when `status_set` is omitted; the ranking read returns only `SCORED` rows in score → recency → id order; each scheduler query returns the right subset/order. Fingerprint injected and mocked. Depends on WP-A.
 
@@ -541,14 +545,15 @@ Red-Green-Refactor; roughly 70% unit / 25% integration / 5% E2E; all external
 dependencies (fingerprint, LLM) mocked except `live`-marked tests; query
 functions tested as plain functions, never through the scheduler.
 
-**Sequence:** `enums.py` → **WP-B (FSM)** → **WP-A (data model)** → WP-C → WP-D
+**Sequence:** `enums.py` → ~~**WP-B (FSM)**~~ **✅ DONE** → **WP-A (data model)** → WP-C → WP-D
 → WP-E → WP-F. B is built before A by preference (purest unit — no I/O, no
 fixtures, no mocking; locks the correctness core D depends on), though A and B
 are interchangeable once `enums.py` exists.
 
 **Step 0 — `enums.py`.** `Status` and `ArtifactKind`. No test of its own.
+*(Partial: `Status`/`ApplicationStatus` landed as part of WP-B below. `ArtifactKind` still open — needed by WP-A.)*
 
-**WP-B — FSM** (pure, no DB). First red test:
+~~**WP-B — FSM** (pure, no DB). First red test:~~ **✅ DONE — all cases below pass, plus the full 33-case suite in `test_enums.py`:**
 ```python
 def test_legal_edge_allowed():
     assert can_transition(Status.DISCOVERED, Status.SCORED)
@@ -567,7 +572,7 @@ def test_terminal_states_have_no_exits():
 Hand-pick representative legal/illegal edges plus structural properties; do not
 loop the map back against itself.
 
-**WP-A — Data model.** First red tests (models + schema):
+~~**WP-A — Data model.** First red tests (models + schema):~~ **✅ DONE** — see completion note under §4 Work Packages above.
 ```python
 def test_jobcreate_refuses_caller_set_status():
     with pytest.raises(ValidationError):

@@ -12,7 +12,6 @@ from app.db import repository as repo
 from app.db.database import create_tables, get_db
 from app.models.job import JobCreate
 from app.routes.chat import router as chat_router
-from app.routes.jobs import router as jobs_router
 from bot.bot import handle_message
 from scoring.fingerprint import fingerprint_job
 from scraper.parser import parse_results
@@ -83,5 +82,4 @@ async def lifespan(app):
 
 
 app = FastAPI(lifespan=lifespan)
-app.include_router(jobs_router)
 app.include_router(chat_router)
