@@ -1,30 +1,32 @@
 from fastapi import APIRouter, Depends
-from fastapi.responses import JSONResponse
-from loguru import logger
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from agent.agent import run
-from app.db.database import get_db
+from app.dependencies import get_agent
+from app.models.enums import ArtifactKind
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 
+class Attachment(BaseModel):
+    kind: ArtifactKind
+    filename: str
+    mime_type: str
+    content: str  # base64-encoded file bytes
+
+
 class ChatRequest(BaseModel):
-    messages: list
-    session_id: str | None = None
+    message: str = Field(min_length=1)
 
 
 class ChatResponse(BaseModel):
     reply: str
+    attachments: list[Attachment] = []
 
 
 @router.post("", response_model=ChatResponse)
-async def chat(payload: ChatRequest, db=Depends(get_db)):
-    logger.debug(f"[chat] received {len(payload.messages)} messages")
-    try:
-        reply = await run(payload.messages, db)
-        logger.debug(f"[chat] agent reply length={len(reply or '')}")
-        return {"reply": reply or ""}
-    except Exception as e:
-        logger.error(f"[chat] unhandled {type(e).__name__}: {e}")
-        return JSONResponse(status_code=500, content={"reply": "", "error": f"{type(e).__name__}: {e}"})
+async def chat(payload: ChatRequest, agent=Depends(get_agent)) -> ChatResponse:
+    # Mental model: `agent` is a single instance, constructed once at the
+    # composition root and injected here via DI (see agent_v2.md — not yet
+    # built). This handler hands it the incoming message; whatever reply the
+    # agent produces is relayed verbatim to whoever called /chat.
+    raise NotImplementedError("agent layer not wired yet — see agent_v2.md")

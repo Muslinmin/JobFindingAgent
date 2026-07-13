@@ -64,6 +64,16 @@ VALID_TRANSITIONS: dict[ApplicationStatus, set[ApplicationStatus]] = {
 }
 
 
+class UserAction(str, Enum):
+    APPLIED = "applied"
+    USER_SKIPPED = "user_skipped"
+    INTERVIEWING = "interviewing"
+    OFFER = "offer"
+    ACCEPTED = "accepted"
+    DECLINED = "declined"
+    REJECTED = "rejected"
+
+
 class InvalidTransitionError(Exception):
     pass
 
