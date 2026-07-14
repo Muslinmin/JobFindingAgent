@@ -1,4 +1,1014 @@
 {
-  "target_roles": "unknown",
-  "updated_at": "2026-05-06T03:27:33.049730"
+  "name": "Muhammad Muslinmin Bin Mohd Saleh",
+  "email": "muhammadmuslinmin@gmail.com",
+  "phone": "+65 8127 6115",
+  "location": "Singapore",
+  "links": [
+    "https://github.com/Muslinmin",
+    "https://www.linkedin.com/in/muslinmin-mus/"
+  ],
+  "education": [
+    {
+      "id": "edu_sit",
+      "institution": "Singapore Institute of Technology",
+      "degree": "Bachelor of Engineering with Honours in Robotics Systems",
+      "date_range": "2022 - 2026",
+      "notes": "Graduated; convocation October 2026",
+      "graduation_date": "Oct 2026"
+    },
+    {
+      "id": "edu_sp",
+      "institution": "Singapore Polytechnic",
+      "degree": "Diploma in Mechatronics & Robotics",
+      "date_range": "Apr 2017 - Mar 2020",
+      "notes": null,
+      "graduation_date": "Mar 2020"
+    }
+  ],
+  "target_tracks": [
+    "robotics",
+    "mechatronics",
+    "robot software engineering",
+    "embedded systems"
+  ],
+  "summary_seed": "Robotics Systems engineering graduate with hands-on experience deploying foundational Visual Language Action models on humanoid and quadruped platforms, building ROS and REST API integrations, and writing embedded firmware in C on STM32. Comfortable across the stack from low-level memory management in C++ to Python data pipelines and Flask services.",
+  "skills": [
+    {
+      "id": "c",
+      "label": "C",
+      "aliases": []
+    },
+    {
+      "id": "cpp",
+      "label": "C++",
+      "aliases": []
+    },
+    {
+      "id": "python",
+      "label": "Python",
+      "aliases": []
+    },
+    {
+      "id": "typescript",
+      "label": "TypeScript",
+      "aliases": []
+    },
+    {
+      "id": "javascript",
+      "label": "JavaScript",
+      "aliases": []
+    },
+    {
+      "id": "html",
+      "label": "HTML",
+      "aliases": []
+    },
+    {
+      "id": "css",
+      "label": "CSS",
+      "aliases": []
+    },
+    {
+      "id": "vba",
+      "label": "VBA",
+      "aliases": [
+        "Excel VBA"
+      ]
+    },
+    {
+      "id": "bash",
+      "label": "Bash",
+      "aliases": [
+        "Shell Scripting"
+      ]
+    },
+    {
+      "id": "ros",
+      "label": "ROS",
+      "aliases": [
+        "Robot Operating System"
+      ]
+    },
+    {
+      "id": "ros1",
+      "label": "ROS 1",
+      "aliases": []
+    },
+    {
+      "id": "ros2",
+      "label": "ROS 2",
+      "aliases": []
+    },
+    {
+      "id": "isaac_lab",
+      "label": "IsaacLab",
+      "aliases": [
+        "NVIDIA Isaac Lab",
+        "NVIDIA Isaac"
+      ]
+    },
+    {
+      "id": "isaac_sim",
+      "label": "IsaacSim",
+      "aliases": [
+        "NVIDIA Isaac Sim"
+      ]
+    },
+    {
+      "id": "mimicgen",
+      "label": "MimicGen",
+      "aliases": []
+    },
+    {
+      "id": "turtlebot",
+      "label": "TurtleBot",
+      "aliases": []
+    },
+    {
+      "id": "rest_api",
+      "label": "REST API",
+      "aliases": [
+        "RESTful API",
+        "REST",
+        "RESTful"
+      ]
+    },
+    {
+      "id": "api_design",
+      "label": "API Design",
+      "aliases": []
+    },
+    {
+      "id": "flask",
+      "label": "Flask",
+      "aliases": []
+    },
+    {
+      "id": "babylonjs",
+      "label": "BabylonJS",
+      "aliases": [
+        "Babylon.js"
+      ]
+    },
+    {
+      "id": "jquery",
+      "label": "jQuery",
+      "aliases": []
+    },
+    {
+      "id": "ui_development",
+      "label": "UI Development",
+      "aliases": []
+    },
+    {
+      "id": "rendering_3d",
+      "label": "3D Rendering",
+      "aliases": []
+    },
+    {
+      "id": "linux",
+      "label": "Linux",
+      "aliases": [
+        "Ubuntu"
+      ]
+    },
+    {
+      "id": "git",
+      "label": "Git",
+      "aliases": [
+        "Version Control"
+      ]
+    },
+    {
+      "id": "autocad",
+      "label": "AutoCAD",
+      "aliases": []
+    },
+    {
+      "id": "cloud",
+      "label": "Cloud Computing",
+      "aliases": [
+        "Cloud Environment Provisioning"
+      ]
+    },
+    {
+      "id": "machine_learning",
+      "label": "Machine Learning",
+      "aliases": [
+        "ML"
+      ]
+    },
+    {
+      "id": "imitation_learning",
+      "label": "Imitation Learning",
+      "aliases": []
+    },
+    {
+      "id": "vla",
+      "label": "Visual Language Action Models",
+      "aliases": [
+        "VLA",
+        "Vision Language Action Models"
+      ]
+    },
+    {
+      "id": "foundation_models",
+      "label": "Foundation Models",
+      "aliases": [
+        "Foundational Models"
+      ]
+    },
+    {
+      "id": "model_finetuning",
+      "label": "Model Fine-Tuning",
+      "aliases": [
+        "Fine-Tuning"
+      ]
+    },
+    {
+      "id": "scikit_learn",
+      "label": "scikit-learn",
+      "aliases": [
+        "sklearn"
+      ]
+    },
+    {
+      "id": "langchain",
+      "label": "LangChain",
+      "aliases": []
+    },
+    {
+      "id": "classification",
+      "label": "Classification",
+      "aliases": []
+    },
+    {
+      "id": "eda",
+      "label": "Exploratory Data Analysis",
+      "aliases": [
+        "EDA"
+      ]
+    },
+    {
+      "id": "data_visualization",
+      "label": "Data Visualization",
+      "aliases": []
+    },
+    {
+      "id": "synthetic_data",
+      "label": "Synthetic Data Generation",
+      "aliases": []
+    },
+    {
+      "id": "data_pipelines",
+      "label": "Data Collection Pipelines",
+      "aliases": [
+        "Data Pipelines"
+      ]
+    },
+    {
+      "id": "stm32",
+      "label": "STM32",
+      "aliases": []
+    },
+    {
+      "id": "microcontrollers",
+      "label": "Microcontrollers",
+      "aliases": [
+        "MCU"
+      ]
+    },
+    {
+      "id": "embedded_systems",
+      "label": "Embedded Systems",
+      "aliases": [
+        "Embedded Firmware",
+        "Firmware"
+      ]
+    },
+    {
+      "id": "parallax",
+      "label": "Parallax Propeller",
+      "aliases": [
+        "Parallax"
+      ]
+    },
+    {
+      "id": "multicore",
+      "label": "Multicore Programming",
+      "aliases": []
+    },
+    {
+      "id": "concurrency",
+      "label": "Concurrency",
+      "aliases": [
+        "Race Conditions",
+        "Concurrent Programming"
+      ]
+    },
+    {
+      "id": "buffer_management",
+      "label": "Buffer Management",
+      "aliases": []
+    },
+    {
+      "id": "interrupt_programming",
+      "label": "Interrupt-Driven Programming",
+      "aliases": [
+        "Interrupt Handling",
+        "ISR"
+      ]
+    },
+    {
+      "id": "realtime",
+      "label": "Real-Time Systems",
+      "aliases": []
+    },
+    {
+      "id": "pwm",
+      "label": "PWM",
+      "aliases": [
+        "Pulse Width Modulation"
+      ]
+    },
+    {
+      "id": "spi",
+      "label": "SPI",
+      "aliases": []
+    },
+    {
+      "id": "uart",
+      "label": "UART",
+      "aliases": []
+    },
+    {
+      "id": "serial_comm",
+      "label": "Serial Communication",
+      "aliases": []
+    },
+    {
+      "id": "peripheral_config",
+      "label": "Peripheral Configuration",
+      "aliases": []
+    },
+    {
+      "id": "systems_programming",
+      "label": "Systems Programming",
+      "aliases": [
+        "Low-Level Programming"
+      ]
+    },
+    {
+      "id": "memory_management",
+      "label": "Memory Management",
+      "aliases": [
+        "Dynamic Memory Allocation",
+        "Memory-Constrained Programming"
+      ]
+    },
+    {
+      "id": "pointer_arithmetic",
+      "label": "Pointer Arithmetic",
+      "aliases": []
+    },
+    {
+      "id": "pid",
+      "label": "PID Control",
+      "aliases": [
+        "PID"
+      ]
+    },
+    {
+      "id": "control_systems",
+      "label": "Control Systems",
+      "aliases": [
+        "Closed-Loop Control"
+      ]
+    },
+    {
+      "id": "motor_control",
+      "label": "Motor Control",
+      "aliases": [
+        "Motor Driver Interfacing"
+      ]
+    },
+    {
+      "id": "stepper_motors",
+      "label": "Stepper Motors",
+      "aliases": []
+    },
+    {
+      "id": "data_structures",
+      "label": "Data Structures",
+      "aliases": []
+    },
+    {
+      "id": "algorithms",
+      "label": "Algorithms",
+      "aliases": []
+    },
+    {
+      "id": "oop",
+      "label": "Object-Oriented Programming",
+      "aliases": [
+        "OOP"
+      ]
+    },
+    {
+      "id": "operator_overloading",
+      "label": "Operator Overloading",
+      "aliases": []
+    },
+    {
+      "id": "time_complexity",
+      "label": "Time Complexity Analysis",
+      "aliases": []
+    },
+    {
+      "id": "search_algorithms",
+      "label": "Search Algorithms",
+      "aliases": []
+    },
+    {
+      "id": "dfs",
+      "label": "Depth-First Search",
+      "aliases": [
+        "DFS"
+      ]
+    },
+    {
+      "id": "graph_search",
+      "label": "Graph Search",
+      "aliases": []
+    },
+    {
+      "id": "robotics_design",
+      "label": "Robotics Systems Design",
+      "aliases": [
+        "Robotics Design"
+      ]
+    },
+    {
+      "id": "humanoid_robots",
+      "label": "Humanoid Robots",
+      "aliases": []
+    },
+    {
+      "id": "quadruped_robots",
+      "label": "Quadruped Robots",
+      "aliases": []
+    },
+    {
+      "id": "amr",
+      "label": "Autonomous Mobile Robots",
+      "aliases": [
+        "AMR",
+        "Mobile Robots"
+      ]
+    },
+    {
+      "id": "fleet_management",
+      "label": "Fleet Management Systems",
+      "aliases": []
+    },
+    {
+      "id": "hri",
+      "label": "Human-Robot Interaction",
+      "aliases": [
+        "HRI"
+      ]
+    },
+    {
+      "id": "pick_and_place",
+      "label": "Pick-and-Place",
+      "aliases": []
+    },
+    {
+      "id": "slam",
+      "label": "SLAM",
+      "aliases": [
+        "Simultaneous Localization and Mapping"
+      ]
+    },
+    {
+      "id": "autonomous_navigation",
+      "label": "Autonomous Navigation",
+      "aliases": [
+        "Navigation"
+      ]
+    },
+    {
+      "id": "path_planning",
+      "label": "Path Planning",
+      "aliases": []
+    },
+    {
+      "id": "line_following",
+      "label": "Line Following",
+      "aliases": []
+    },
+    {
+      "id": "mecanum",
+      "label": "Mecanum Drive",
+      "aliases": []
+    },
+    {
+      "id": "sensor_integration",
+      "label": "Sensor Integration",
+      "aliases": []
+    },
+    {
+      "id": "color_sensing",
+      "label": "Color Sensing",
+      "aliases": []
+    },
+    {
+      "id": "teleoperation",
+      "label": "Teleoperation",
+      "aliases": []
+    },
+    {
+      "id": "multi_camera",
+      "label": "Multi-Camera Systems",
+      "aliases": []
+    },
+    {
+      "id": "simulation",
+      "label": "Robot Simulation",
+      "aliases": [
+        "Simulation"
+      ]
+    },
+    {
+      "id": "xr",
+      "label": "Extended Reality",
+      "aliases": [
+        "XR"
+      ]
+    },
+    {
+      "id": "vr",
+      "label": "Virtual Reality",
+      "aliases": [
+        "VR"
+      ]
+    },
+    {
+      "id": "requirements_gathering",
+      "label": "Requirements Gathering",
+      "aliases": []
+    },
+    {
+      "id": "stakeholder_vv",
+      "label": "Stakeholder Verification and Validation",
+      "aliases": []
+    },
+    {
+      "id": "stakeholder_engagement",
+      "label": "Stakeholder Engagement",
+      "aliases": [
+        "Stakeholder Management"
+      ]
+    },
+    {
+      "id": "system_integration",
+      "label": "System Integration",
+      "aliases": []
+    },
+    {
+      "id": "testing_validation",
+      "label": "Testing and Validation",
+      "aliases": [
+        "Hardware Validation",
+        "Validation"
+      ]
+    },
+    {
+      "id": "benchmarking",
+      "label": "Benchmarking",
+      "aliases": []
+    },
+    {
+      "id": "troubleshooting",
+      "label": "Troubleshooting",
+      "aliases": [
+        "Debugging"
+      ]
+    },
+    {
+      "id": "technical_documentation",
+      "label": "Technical Documentation",
+      "aliases": [
+        "Documentation"
+      ]
+    },
+    {
+      "id": "technical_presentation",
+      "label": "Technical Presentation",
+      "aliases": []
+    },
+    {
+      "id": "automation",
+      "label": "Automation",
+      "aliases": []
+    },
+    {
+      "id": "lean",
+      "label": "Lean Waste Analysis",
+      "aliases": [
+        "Lean"
+      ]
+    },
+    {
+      "id": "time_motion_study",
+      "label": "Time and Motion Study",
+      "aliases": []
+    },
+    {
+      "id": "process_improvement",
+      "label": "Process Improvement",
+      "aliases": []
+    },
+    {
+      "id": "procurement",
+      "label": "Procurement",
+      "aliases": []
+    },
+    {
+      "id": "contract_management",
+      "label": "Contract Management",
+      "aliases": []
+    },
+    {
+      "id": "budget_management",
+      "label": "Budget Management",
+      "aliases": []
+    },
+    {
+      "id": "cross_functional",
+      "label": "Cross-Functional Coordination",
+      "aliases": []
+    },
+    {
+      "id": "reporting_automation",
+      "label": "Reporting Automation",
+      "aliases": []
+    }
+  ],
+  "experiences": [
+    {
+      "id": "exp_ceredroid_iwsp",
+      "title": "Robot Learning and Motion Engineer",
+      "organization": "Ceredroid - Integrated Work Study Programme (IWSP), Singapore",
+      "date_range": "Jan 2025 - Dec 2025",
+      "bullets": [
+        "Researched and benchmarked Visual Language Action (VLA) foundational models, evaluating suitability for deployment on humanoid and quadruped robotic platforms.",
+        "Developed interactive humanoid and quadruped robot applications for tasks including pick-and-place, autonomous patrol, and fleet management integration, supporting live client and public showcases.",
+        "Maintained accurate documentation and records for model performance and system integration tests during the Integrated Work Study Programme (IWSP)."
+      ],
+      "demonstrated_skills": [
+        "vla",
+        "foundation_models",
+        "machine_learning",
+        "benchmarking",
+        "humanoid_robots",
+        "quadruped_robots",
+        "pick_and_place",
+        "fleet_management",
+        "robotics_design",
+        "system_integration",
+        "testing_validation",
+        "technical_documentation",
+        "python",
+        "ros"
+      ]
+    },
+    {
+      "id": "exp_sit_swe_intern",
+      "title": "Software Engineering Intern",
+      "organization": "Singapore Institute of Technology, Singapore",
+      "date_range": "Jan 2024 - Mar 2024",
+      "bullets": [
+        "Implemented interactive UI components for a VR application using TypeScript and BabylonJS, contributing to the platform through collaborative programming and troubleshooting."
+      ],
+      "demonstrated_skills": [
+        "typescript",
+        "babylonjs",
+        "html",
+        "css",
+        "git",
+        "vr",
+        "rendering_3d",
+        "ui_development",
+        "troubleshooting"
+      ]
+    },
+    {
+      "id": "exp_infineon_ie_intern",
+      "title": "Industrial Engineering Intern",
+      "organization": "Infineon Technologies, Singapore",
+      "date_range": "Feb 2019 - Aug 2019",
+      "bullets": [
+        "Conducted lean waste analysis, time studies, and motion & man-process workflow studies to identify production floor bottlenecks and deduce facts for process improvement.",
+        "Produced AutoCAD floor plans and technical schematics to redesign production layouts, optimizing material flow and reducing unnecessary operator movement."
+      ],
+      "demonstrated_skills": [
+        "lean",
+        "time_motion_study",
+        "process_improvement",
+        "autocad",
+        "technical_documentation",
+        "requirements_gathering"
+      ]
+    },
+    {
+      "id": "exp_saf_corporal",
+      "title": "Corporal - Procurement Clerk & IPPT Management",
+      "organization": "Singapore Armed Forces (SAF), Singapore",
+      "date_range": "Aug 2020 - Aug 2022",
+      "bullets": [
+        "Led procurement coordination and managed contracts for reservist units with budgets up to S$20,000, ensuring compliance with spending guidelines and audit readiness.",
+        "Served as primary liaison between suppliers and senior stakeholders, supporting cross-functional coordination and maintaining clear documentation for accountability.",
+        "Developed an Excel VBA automation to generate monthly IPPT performance reports for key appointment holders, improving reporting efficiency and data accuracy through programming.",
+        "Awarded Best Soldier of the Month (Feb 2022) for reliability and operational excellence."
+      ],
+      "demonstrated_skills": [
+        "procurement",
+        "contract_management",
+        "budget_management",
+        "stakeholder_engagement",
+        "cross_functional",
+        "technical_documentation",
+        "vba",
+        "automation",
+        "reporting_automation"
+      ]
+    }
+  ],
+  "projects": [
+    {
+      "id": "proj_capstone_synthetic_data",
+      "title": "Capstone - Synthetic Data Pipeline for Arm Manipulation Imitation Learning",
+      "organization": "Singapore Institute of Technology / Ceredroid",
+      "date_range": "2026",
+      "bullets": [
+        "Fine-tuned Foundational Visual Language Action (VLA) model on a bimanual pouring task using a 34-DOF humanoid robot, owning end-to-end deployment and validating the full system on physical hardware via ROS.",
+        "Adapted IsaacLab MimicGen simulation framework to a custom humanoid platform with custom XR control through Python programming and Bash scripting for dataset conversion, producing seamless synthetic data generation at scale.",
+        "Built a real-world teleoperation data collection pipeline capturing robot states, actions, and observations via a multi-camera system in Python ROS, ensuring accurate documentation of training datasets.",
+        "Integrated robot and AI model deployment to fleet management systems by exposing Flask REST APIs, enhancing system automation and connectivity.",
+        "Provisioned model training environments on cloud, reducing training bottlenecks and enabling faster iteration across fine-tuning experiments.",
+        "Validated the full pipeline through live physical robot demos of pick-and-place and pouring tasks, demonstrating real-world transferability of the trained model on a 34-DOF humanoid platform."
+      ],
+      "demonstrated_skills": [
+        "vla",
+        "foundation_models",
+        "model_finetuning",
+        "imitation_learning",
+        "machine_learning",
+        "synthetic_data",
+        "data_pipelines",
+        "teleoperation",
+        "multi_camera",
+        "simulation",
+        "isaac_lab",
+        "isaac_sim",
+        "mimicgen",
+        "python",
+        "bash",
+        "ros",
+        "flask",
+        "rest_api",
+        "api_design",
+        "fleet_management",
+        "cloud",
+        "humanoid_robots",
+        "pick_and_place",
+        "xr",
+        "robotics_design",
+        "system_integration",
+        "testing_validation",
+        "automation",
+        "technical_documentation"
+      ]
+    },
+    {
+      "id": "proj_robosg_tictactoe",
+      "title": "RoboSG 2025 - Humanoid Plays Tic-Tac-Toe with User",
+      "organization": "Public Demo - Singapore Institute of Technology / Ceredroid",
+      "date_range": "2025",
+      "bullets": [
+        "Co-developed ROS code and REST APIs for a humanoid robot that plays Tic-Tac-Toe, utilizing LangChain and LLM for natural language interaction to deliver a fully functional human-robot interaction demo.",
+        "Presented the robotics system to Senior Minister Teo Chee Hean, with media press coverage highlighting the SIT-Ceredroid collaboration and contributing to the company's public visibility."
+      ],
+      "demonstrated_skills": [
+        "ros",
+        "rest_api",
+        "api_design",
+        "python",
+        "langchain",
+        "hri",
+        "humanoid_robots",
+        "robotics_design",
+        "system_integration",
+        "technical_presentation",
+        "stakeholder_engagement"
+      ]
+    },
+    {
+      "id": "proj_titanic_ml",
+      "title": "Titanic Survival Prediction - Machine Learning Classifier",
+      "organization": "AI/ML Coursework - Singapore Institute of Technology",
+      "date_range": "2024",
+      "bullets": [
+        "Engineered an end-to-end classification pipeline in Python supporting multiple scikit-learn models, defining problems and collecting data to achieve 90% accuracy through automated visualization reporting."
+      ],
+      "demonstrated_skills": [
+        "python",
+        "scikit_learn",
+        "machine_learning",
+        "classification",
+        "eda",
+        "data_visualization",
+        "automation"
+      ]
+    },
+    {
+      "id": "proj_food_printing",
+      "title": "Food Printing System",
+      "organization": "Embedded Systems Project - Nichers Bakery",
+      "date_range": "2024",
+      "bullets": [
+        "Designed and built a food printing robotics system for local bakery Nichers, featuring a detachable portable printer, conveyor belt, and stepper motors for precise printer head control.",
+        "Developed embedded firmware in C on STM32, handling motor driver interfacing and coordinating multi-axis movement control for print head positioning.",
+        "Owned stakeholder engagement through iterative verification and validation cycles with the bakery owner, ensuring the system met real-world operational requirements through rigorous troubleshooting and testing."
+      ],
+      "demonstrated_skills": [
+        "c",
+        "stm32",
+        "microcontrollers",
+        "embedded_systems",
+        "motor_control",
+        "stepper_motors",
+        "robotics_design",
+        "requirements_gathering",
+        "stakeholder_vv",
+        "stakeholder_engagement",
+        "troubleshooting",
+        "testing_validation"
+      ]
+    },
+    {
+      "id": "proj_cpp_datastructures",
+      "title": "C++ Systems Programming Coursework - Data Structures & Memory Management",
+      "organization": "C++ Programming Coursework - Singapore Institute of Technology",
+      "date_range": "2023",
+      "bullets": [
+        "Applied manual memory management, pointer arithmetic, and struct design to build data structures from scratch, progressing from procedural free-function design to OOP class encapsulation.",
+        "Extended class designs with operator overloading to produce STL-style interfaces and applied dynamic memory allocation in a grid-based simulation, managing object lifecycles without STL containers.",
+        "Designed and implemented a page-based memory allocator from scratch, managing raw memory in fixed-size pages to demonstrate understanding of allocator internals.",
+        "Implemented and analyzed binary search and node-based search algorithms, evaluating trade-offs in time complexity across data structure choices."
+      ],
+      "demonstrated_skills": [
+        "cpp",
+        "systems_programming",
+        "data_structures",
+        "algorithms",
+        "memory_management",
+        "pointer_arithmetic",
+        "oop",
+        "operator_overloading",
+        "search_algorithms",
+        "time_complexity"
+      ]
+    },
+    {
+      "id": "proj_freecodecamp_web",
+      "title": "Responsive Web Design & JavaScript Algorithms",
+      "organization": "Self-Directed Learning - freeCodeCamp",
+      "date_range": "2018",
+      "bullets": [
+        "Completed 600+ hours of coursework across two certifications - Responsive Web Design (HTML, CSS, jQuery) and JavaScript Algorithms & Data Structures - building functional webpages and implementing classic CS algorithms and data structures in JavaScript."
+      ],
+      "demonstrated_skills": [
+        "html",
+        "css",
+        "javascript",
+        "jquery",
+        "data_structures",
+        "algorithms"
+      ]
+    },
+    {
+      "id": "proj_mecanum_color_robot",
+      "title": "Mecanum-Drive Color-Following Robot",
+      "organization": "Robotics Systems Coursework - Singapore Institute of Technology",
+      "date_range": "2023",
+      "bullets": [
+        "Built a mecanum-drive mobile robot that autonomously follows a target colour, implementing low-level control firmware on a Parallax board and STM32 microcontroller.",
+        "Programmed against a multicore architecture, coordinating concurrent tasks across cores for sensing and drive control.",
+        "Interfaced colour sensors and motor drivers directly at the register level, translating sensor readings into omnidirectional mecanum wheel commands."
+      ],
+      "demonstrated_skills": [
+        "c",
+        "embedded_systems",
+        "systems_programming",
+        "parallax",
+        "stm32",
+        "microcontrollers",
+        "multicore",
+        "concurrency",
+        "mecanum",
+        "motor_control",
+        "sensor_integration",
+        "color_sensing",
+        "amr",
+        "robotics_design"
+      ]
+    },
+    {
+      "id": "proj_slam_maze_robot",
+      "title": "SLAM-Based Maze Navigation Robot (ROS 1)",
+      "organization": "Robotics Systems Coursework - Singapore Institute of Technology",
+      "date_range": "2023",
+      "bullets": [
+        "Developed a SLAM-based navigation stack in ROS 1 for a small mobile robot, enabling it to map and autonomously navigate an unknown maze.",
+        "Integrated mapping, localization, and motion control nodes into a working autonomous navigation pipeline on physical hardware."
+      ],
+      "demonstrated_skills": [
+        "ros",
+        "ros1",
+        "python",
+        "slam",
+        "autonomous_navigation",
+        "path_planning",
+        "amr",
+        "robotics_design",
+        "sensor_integration",
+        "linux"
+      ]
+    },
+    {
+      "id": "proj_ros2_dfs_maze",
+      "title": "ROS 2 Maze Solver — Depth-First Search Without Pre-Mapping",
+      "organization": "Robotics Systems Coursework - Singapore Institute of Technology",
+      "date_range": "2023",
+      "bullets": [
+        "Implemented a depth-first search maze-solving algorithm on a simulated TurtleBot in ROS 2, navigating an unknown maze without any pre-built map.",
+        "Designed the exploration logic to make movement decisions purely from live sensor readings, exploring and backtracking through the maze graph at runtime."
+      ],
+      "demonstrated_skills": [
+        "ros",
+        "ros2",
+        "python",
+        "simulation",
+        "turtlebot",
+        "dfs",
+        "graph_search",
+        "algorithms",
+        "autonomous_navigation",
+        "path_planning",
+        "amr",
+        "linux"
+      ]
+    },
+    {
+      "id": "proj_line_following_robot",
+      "title": "Line-Following Robot - Interrupt-Driven STM32 Firmware with PID Control",
+      "organization": "Robotics Systems Coursework - Singapore Institute of Technology",
+      "date_range": "2024",
+      "bullets": [
+        "Built a line-following robot on STM32, writing interrupt-driven embedded firmware to react to sensor events in real time.",
+        "Implemented a PID controller to translate line-position error into steering corrections, producing smooth closed-loop tracking of the line.",
+        "Configured microcontroller peripherals directly, setting up PWM pin configurations for motor driver control and implementing SPI and UART communication with peripheral devices.",
+        "Designed a buffer allocation system to eliminate race conditions between interrupt handlers sharing the same buffers, working within a hard memory constraint imposed on the project."
+      ],
+      "demonstrated_skills": [
+        "c",
+        "embedded_systems",
+        "systems_programming",
+        "stm32",
+        "microcontrollers",
+        "interrupt_programming",
+        "realtime",
+        "pid",
+        "control_systems",
+        "pwm",
+        "peripheral_config",
+        "spi",
+        "uart",
+        "serial_comm",
+        "concurrency",
+        "buffer_management",
+        "memory_management",
+        "motor_control",
+        "sensor_integration",
+        "line_following",
+        "amr",
+        "robotics_design",
+        "troubleshooting"
+      ]
+    }
+  ],
+  "years_of_experience": 1.5,
+  "candidate_status": "Fresh graduate, convocation October 2026"
 }
