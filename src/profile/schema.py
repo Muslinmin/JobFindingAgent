@@ -28,6 +28,15 @@ def tier(t: str) -> dict:
     return {"tier": t}
 
 
+def field_tier(model_cls: type[BaseModel], field_name: str) -> str | None:
+    """Read back the tier a field was declared with. The one place that
+    knows the storage shape (`json_schema_extra`), so every tier-walking
+    projection (profile/projections.py, tailoring/prompt.py,
+    tailoring/render.py) reads it the same way."""
+    extra = model_cls.model_fields[field_name].json_schema_extra
+    return extra.get("tier") if isinstance(extra, dict) else None
+
+
 # ==========================================================================
 # Schema
 # ==========================================================================
@@ -48,6 +57,15 @@ class Skill(BaseModel):
     aliases: list[str] = Field(
         default_factory=list,
         description="ATS variant spellings of the SAME competence.",
+    )
+    category: str | None = Field(
+        None,
+        description=(
+            "Display grouping for the CV's Skills section (e.g. 'Programming "
+            "Languages', 'Tools & Frameworks'). Rendering concern only — the "
+            "tailorer still selects by skill id; category never affects "
+            "which skills may be selected, only how selected ones are grouped."
+        ),
     )
 
     def surfaces(self) -> list[str]:
@@ -127,6 +145,16 @@ class Profile(BaseModel):
     email: str = Field(..., json_schema_extra=tier(RENDER))
     phone: str | None = Field(None, json_schema_extra=tier(RENDER))
     links: list[str] = Field(default_factory=list, json_schema_extra=tier(RENDER))
+    headline: str | None = Field(
+        None,
+        json_schema_extra=tier(RENDER),
+        description=(
+            "One-line CV subtitle under the name, e.g. 'Robotics Systems, "
+            "Singapore Institute of Technology'. Human-authored personal "
+            "branding, not derived from education/target_tracks — those "
+            "phrase differently for different purposes."
+        ),
+    )
 
     # --- content superset: what the LLM selects and reorders from
     summary_seed: str | None = Field(None, json_schema_extra=tier(BODY))

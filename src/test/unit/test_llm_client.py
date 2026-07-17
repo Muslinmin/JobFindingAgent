@@ -1,6 +1,8 @@
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, AsyncMock, MagicMock
 
-from agent.llm_client import LLMClient
+import pytest
+
+from agent.llm_client import AsyncLLMClient, LLMClient
 from app.config import settings
 
 
@@ -78,3 +80,39 @@ def test_llm_client_response_tool_calls_accessible():
                return_value=_mock_response(tool_calls=[tool_call])):
         response = LLMClient(model="test-model").chat([], [])
     assert response.choices[0].message.tool_calls == [tool_call]
+
+
+# ── async client (WP3 — tailoring layer) ────────────────────────────────────────
+
+def test_async_llm_client_uses_settings_model_by_default():
+    client = AsyncLLMClient()
+    assert client.model == settings.model
+
+
+def test_async_llm_client_accepts_model_override():
+    client = AsyncLLMClient(model="test-model-override")
+    assert client.model == "test-model-override"
+
+
+@pytest.mark.asyncio
+async def test_async_llm_client_calls_litellm_acompletion_with_single_message():
+    with patch("agent.llm_client.acompletion",
+               new=AsyncMock(return_value=_mock_response(content="tailored"))) as mock_acompletion:
+        result = await AsyncLLMClient(model="test-model").complete("a prompt")
+    kwargs = mock_acompletion.call_args.kwargs
+    assert kwargs["model"] == "test-model"
+    assert kwargs["messages"] == [{"role": "user", "content": "a prompt"}]
+    assert result == "tailored"
+
+
+@pytest.mark.asyncio
+async def test_async_llm_client_does_not_retry_on_rate_limit():
+    from litellm.exceptions import RateLimitError
+
+    with patch(
+        "agent.llm_client.acompletion",
+        new=AsyncMock(side_effect=RateLimitError("rate limited", llm_provider="test", model="test-model")),
+    ) as mock_acompletion:
+        with pytest.raises(RateLimitError):
+            await AsyncLLMClient(model="test-model").complete("a prompt")
+    mock_acompletion.assert_called_once()

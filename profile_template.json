@@ -6,6 +6,7 @@
   "email": "jane.candidate@example.com",
   "phone": "+65 9000 0000",
   "links": ["https://github.com/example", "https://www.linkedin.com/in/example/"],
+  "headline": "Example Systems, Example Institute of Technology",
   "education": [
     {"id": "edu_primary", "institution": "Example Institute of Technology",
      "degree": "Bachelor of Engineering with Honours in Example Systems",
@@ -17,12 +18,12 @@
   "target_tracks": ["example track one", "example track two"],
   "summary_seed": "Example engineer with hands-on experience across widget design and sprocket automation.",
   "skills": [
-    {"id": "example_language", "label": "Example Language", "aliases": []},
+    {"id": "example_language", "label": "Example Language", "aliases": [], "category": "Programming Languages"},
     {"id": "example_framework", "label": "Example Framework",
-     "aliases": ["Example Framework (Variant Spelling)", "ExFramework"]},
-    {"id": "example_tool", "label": "Example Tool", "aliases": []},
-    {"id": "example_concept", "label": "Example Concept", "aliases": []},
-    {"id": "orphan_example", "label": "Orphan Example Skill", "aliases": []}
+     "aliases": ["Example Framework (Variant Spelling)", "ExFramework"], "category": "Tools & Frameworks"},
+    {"id": "example_tool", "label": "Example Tool", "aliases": [], "category": "Tools & Frameworks"},
+    {"id": "example_concept", "label": "Example Concept", "aliases": [], "category": "Concepts"},
+    {"id": "orphan_example", "label": "Orphan Example Skill", "aliases": [], "category": null}
   ],
   "experiences": [
     {"id": "exp_example_role", "title": "Example Engineer",

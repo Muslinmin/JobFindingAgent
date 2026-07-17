@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
-from profile.schema import BODY, IDENTITY, INDEX, Profile
+from profile.schema import BODY, IDENTITY, INDEX, Profile, field_tier
 
 # agent_v2.md §5: "a tagged scalar exceeding the budget is treated as a body
 # and excluded" — stops an oversized identity field (e.g. an accidental
@@ -33,11 +33,6 @@ class IndexView(BaseModel):
     projects: list[IndexItem]
 
 
-def _field_tier(model_cls: type[BaseModel], field_name: str) -> str | None:
-    extra = model_cls.model_fields[field_name].json_schema_extra
-    return extra.get("tier") if isinstance(extra, dict) else None
-
-
 def _index_label(item: object) -> str:
     if isinstance(item, str):
         return item
@@ -55,7 +50,7 @@ def _project_identity_model(instance: BaseModel) -> dict[str, object]:
     return {
         name: getattr(instance, name)
         for name in cls.model_fields
-        if _field_tier(cls, name) == IDENTITY and getattr(instance, name) not in (None, "")
+        if field_tier(cls, name) == IDENTITY and getattr(instance, name) not in (None, "")
     }
 
 
@@ -67,7 +62,7 @@ def profile_summary(p: Profile) -> str:
 
     cls = type(p)
     for name in cls.model_fields:
-        t = _field_tier(cls, name)
+        t = field_tier(cls, name)
         if t not in (IDENTITY, INDEX):
             continue
 

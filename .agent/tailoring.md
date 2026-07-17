@@ -102,89 +102,35 @@ production.
 ## 6. Renderer (deterministic)
 
 - Single Jinja2 `.tex` template owns **all** LaTeX syntax; the LLM never emits
-  LaTeX. (LaTeX equivalent of invariant 2.)
+  LaTeX. (LaTeX equivalent of invariant 2.) It emits a lightweight `**term**`
+  markdown-style marker for emphasis instead; the renderer is the only thing
+  that ever turns that into `\textbf{}`.
 - Mandatory LaTeX-escape pass over every content string (`& % $ # _ { } ~ ^ \`)
   before substitution.
-- Compile with `tectonic` (alt: `latexmk`) → PDF → register via
-  `POST /jobs/{id}/artifacts` (`kind='cv_pdf'`).
-- **One entry-level template** (Skills + Projects prioritised, Education
-  weighted, 3–5 achievement bullets). No multi-template selection — that would
-  reopen the "LLM affects layout" question.
-- Cover letter is a **plain-text artifact** (`kind='cover_letter'`) (I.E WORD DOCUMENT), not a second
-  LaTeX render — delivered as text (PDF ATTACHMENT) via Telegram.
+- Compiled with `tectonic`, run off the event loop via `asyncio.to_thread`
+  (it's a blocking subprocess call).
+- **One entry-level template** (Skills grouped by category, Projects and
+  Experience, Education). No multi-template selection — that would reopen
+  the "LLM affects layout" question.
+- Cover letter is a **plain-text artifact** (`kind='cover_letter'`), not a
+  second LaTeX render — delivered as text via Telegram.
 
 ---
 
-## 8. Indicative schema (encodes §2–§3; not yet locked)
+## 7. Implementation, integration, and guarantees
 
-```python
-# --- Profile: the superset, source of truth ---
-class ProfileItem(BaseModel):          # experience or project
-    id: str
-    title: str
-    organization: str | None = None
-    date_range: str | None = None
-    bullets: list[str]                 # frozen factual base text
-    demonstrated_skills: list[str]     # skill ids genuinely exercised by THIS item
-
-class Profile(BaseModel):
-    # identity tier — frozen, never LLM-touched
-    name: str
-    email: str
-    phone: str | None = None
-    location: str | None = None
-    links: list[str] = []
-    education: list[Education]
-    # content superset
-    summary_seed: str | None = None
-    experiences: list[ProfileItem]
-    projects: list[ProfileItem]
-    skills: list[str]                  # full superset incl. ATS surface variants
-
-# --- TailoredSelection: LLM output, projection only (NO identity) ---
-class TailoredItem(BaseModel):
-    ref_id: str                        # MUST resolve to a Profile item id
-    bullets: list[str]                 # constrained rewrite of that item's bullets
-
-class TailoredSelection(BaseModel):
-    summary: str                       # constrained-rewrite summary
-    experience_order: list[str]        # ref_ids — inclusion + order
-    experiences: list[TailoredItem]
-    project_order: list[str]
-    projects: list[TailoredItem]
-    skill_order: list[str]             # skill ids to surface, ordered
-```
-
-Validators encode the guards: `ref_id` referential integrity, surfaced-skill
-containment, no-new-specifics diff against `Profile`.
-
----
-
-## 9. Integration points (unchanged plumbing)
-
-- **Two entry points, one service:** the daily budgeted `tailor` job (top
-  `tailor_batch_size` SCORED by score) and the on-demand `tailor_resume` agent
-  tool both call the same tailoring service.
-- **Skills as prompt-file domain knowledge:** `prompts/tailoring.md` carries
-  `resume-tailor` + `resume-ats-optimizer` + `resume-section-builder`; loaded
-  only by the tailoring stage, never on every chat call. They constrain content
-  selection only — they never touch the renderer.
-- **Artifacts** written to disk, registered via `POST /jobs/{id}/artifacts`;
-  reaching `TAILORED` advances the FSM toward `PENDING_APPROVAL`. HOWEVER, The tailoring layer does not advance the FSM. the caller does so...
-
----
-
-## 10. Testable invariants (TDD targets)
+Implemented in full — see `tailoring_build.md` for the module map and the
+calling convention (`tailor()`'s signature, error handling,
+`src/app/tailoring_usage_example.py` for a worked example). Summarized here
+is what the implementation *guarantees*, independent of how it's called:
 
 1. Every `ref_id` in a `TailoredSelection` resolves to a real `Profile` item.
 2. Skill terms detected in any tailored item's text ⊆ that item's `demonstrated_skills`.
-3. No numeral or named entity appears in tailored text that is absent from the source item.
+3. No numeral or named entity appears in tailored text that is absent from the source item (including entities introduced only via the `**bold**` marker — it carries no truthfulness exemption).
 4. Identity fields in the render model are byte-identical to `profile.json`.
-5. LLM output validates against the `TailoredSelection` schema (mock the LLM).
-6. Scorer returns `0`, never `NaN`, on empty keywords (v2.0) / zero vector (v2.1) — applies at discovery.
-7. A guard violation logs and fails cleanly; no partial render is produced and no retry is attempted.
-8. `.tex` template output is snapshot-stable; one `live`-marked test compiles a fixture to PDF (catches escaping/template regressions).
+5. LLM output validates against the `TailoredSelection` schema, checked against the `Profile` in the same pass (a dangling `ref_id` is a schema failure, not a guard failure).
+6. A guard violation logs at CRITICAL and fails cleanly — no partial render, no retry.
 
----
-
-
+The tailoring layer performs no database I/O; two callers (a daily batch job
+and an on-demand agent tool) are expected to call the same `tailor()`, but
+neither is built yet — see `tailoring_build.md`'s Caller contract.

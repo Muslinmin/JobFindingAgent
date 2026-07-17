@@ -1,0 +1,123 @@
+\documentclass[letterpaper,11pt]{article}
+
+\usepackage{latexsym}
+\usepackage[empty]{fullpage}
+\usepackage{titlesec}
+\usepackage[usenames,dvipsnames]{color}
+\usepackage{verbatim}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\usepackage{fancyhdr}
+\usepackage[english]{babel}
+\usepackage{tabularx}
+\usepackage{geometry}
+
+\geometry{top=0.5in, bottom=0.5in, left=0.6in, right=0.6in}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyfoot{}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrulewidth}{0pt}
+
+\urlstyle{same}
+\raggedbottom
+\raggedright
+\setlength{\tabcolsep}{0in}
+
+% Section formatting
+\titleformat{\section}{
+  \vspace{-4pt}\scshape\raggedright\large
+}{}{0em}{}[\color{black}\titlerule \vspace{-5pt}]
+
+% Custom commands
+\newcommand{\resumeItem}[1]{\item\small{#1 \vspace{-2pt}}}
+
+\newcommand{\resumeSubheading}[4]{
+  \vspace{-2pt}\item
+  \begin{tabular*}{0.97\textwidth}[t]{l@{\extracolsep{\fill}}r}
+    \textbf{#1} & #2 \\
+    \textit{\small#3} & \textit{\small #4} \\
+  \end{tabular*}\vspace{-7pt}
+}
+
+\newcommand{\resumeSubItem}[1]{\resumeItem{#1}\vspace{-4pt}}
+\renewcommand\labelitemii{$\vcenter{\hbox{\tiny$\bullet$}}$}
+\newcommand{\resumeSubHeadingListStart}{\begin{itemize}[leftmargin=0.15in, label={}]}
+\newcommand{\resumeSubHeadingListEnd}{\end{itemize}}
+\newcommand{\resumeItemListStart}{\begin{itemize}}
+\newcommand{\resumeItemListEnd}{\end{itemize}\vspace{-5pt}}
+
+%-------------------------------------------
+%%%%%%  RESUME STARTS HERE  %%%%%%%%%%%%
+
+\begin{document}
+
+%----------HEADING----------
+\begin{center}
+  {\Huge \scshape \VAR{name}} \\ \vspace{4pt}
+  \BLOCK{if headline}
+  \small \VAR{headline} \\ \vspace{2pt}
+  \BLOCK{endif}
+  \VAR{email}\BLOCK{if phone} $|$ \VAR{phone}\BLOCK{endif}\BLOCK{for link in links} $|$ \href{\VAR{link.url}}{\VAR{link.display}}\BLOCK{endfor}
+\end{center}
+
+%-----------EDUCATION-----------
+\BLOCK{if education}
+\section{Education}
+\resumeSubHeadingListStart
+\BLOCK{for edu in education}
+  \resumeSubheading
+    {\VAR{edu.institution}}{\VAR{edu.date_range or ''}}
+    {\VAR{edu.degree}}{\VAR{edu.notes or ''}}
+\BLOCK{endfor}
+\resumeSubHeadingListEnd
+\BLOCK{endif}
+
+%-----------SKILLS-----------
+\BLOCK{if skill_categories}
+\section{Skills}
+\begin{itemize}[leftmargin=0.15in, label={}]
+  \small{\item{
+\BLOCK{for category in skill_categories}
+    \textbf{\VAR{category.label}:} \VAR{category.skills|join(', ')} \\
+\BLOCK{endfor}
+  }}
+\end{itemize}
+\BLOCK{endif}
+
+%-----------PROJECTS-----------
+\BLOCK{if projects}
+\section{Projects}
+\resumeSubHeadingListStart
+\BLOCK{for project in projects}
+  \resumeSubheading
+    {\VAR{project.title}}{\VAR{project.date_range or ''}}
+    {\VAR{project.organization or ''}}{}
+  \resumeItemListStart
+\BLOCK{for bullet in project.bullets}
+    \resumeItem{\VAR{bullet}}
+\BLOCK{endfor}
+  \resumeItemListEnd
+\BLOCK{endfor}
+\resumeSubHeadingListEnd
+\BLOCK{endif}
+
+%-----------EXPERIENCE-----------
+\BLOCK{if experiences}
+\section{Experience}
+\resumeSubHeadingListStart
+\BLOCK{for exp in experiences}
+  \resumeSubheading
+    {\VAR{exp.title}}{\VAR{exp.date_range or ''}}
+    {\VAR{exp.organization or ''}}{}
+  \resumeItemListStart
+\BLOCK{for bullet in exp.bullets}
+    \resumeItem{\VAR{bullet}}
+\BLOCK{endfor}
+  \resumeItemListEnd
+\BLOCK{endfor}
+\resumeSubHeadingListEnd
+\BLOCK{endif}
+
+\end{document}
