@@ -1,6 +1,8 @@
 # Profile Layer — Planning Document (v2)
 
-Status: planning complete, pre-implementation. Introduces `target_tracks`,
+Status: implemented. Package lives at `src/profile/` (the `services/profile/`
+paths in § Work Packages below predate implementation and are stale — see
+§ API Reference for the real module paths). Introduces `target_tracks`,
 the tier-tagged schema, load-time invariant validation, and the typed-operation
 mutator contract.
 Scope: the profile layer only. How each consumer *uses* the projection it
@@ -582,6 +584,174 @@ text, which changes the fingerprint, which forces a re-embed on the next `score`
 call. No invalidation plumbing, no cross-layer notification, no stale-cache bug.
 This is a direct dividend of the scorer holding a *pure function of its input*
 rather than external state.
+
+---
+
+## API Reference — exposed function contracts
+
+Everything in this section is what actually shipped in `src/profile/`, not the
+plan. If a caller needs to know an exact type, an exception, or an import
+path, this is the section to read — § Integration explains *who gets what and
+why*; this section is *how to call it*.
+
+### `profile.schema` — the types every consumer imports
+
+```python
+from profile.schema import (
+    IDENTITY, INDEX, BODY, RENDER,        # tier constants
+    Skill, Education, ProfileItem, Profile,
+    ProfileOp,                            # discriminated union, see below
+    AddTargetTrack, RemoveTargetTrack, AddSkill, RemoveSkill,
+    AddItem, EditBullets, TagSkill,
+    QUERY_AFFECTING_OPS,                  # set[str] of op names that stale queries
+)
+```
+
+- `Skill.surfaces() -> list[str]` — every spelling this skill may legitimately
+  appear as (`[label, *aliases]`).
+- `Profile.items -> list[ProfileItem]` — property; experiences + projects
+  concatenated into the one flat namespace that every `item_id` / `ref_id`
+  below resolves against.
+- `Profile`, `ProfileItem`, `Education`, `Skill` all set
+  `model_config = ConfigDict(extra="forbid")` — constructing or validating one
+  from a dict with an unknown key raises `pydantic.ValidationError`, it does
+  not silently drop the key.
+
+### `profile.loader`
+
+```python
+def load_profile(path: str | Path) -> Profile
+```
+
+Raises `FileNotFoundError` if `path` doesn't exist, `pydantic.ValidationError`
+if the JSON doesn't match the schema, `ProfileInvariantError` if it matches
+the schema but breaks a structural guarantee. Every consumer's entry point —
+call this once, pass the returned `Profile` down.
+
+### `profile.invariants`
+
+```python
+class ProfileInvariantError(ValueError): ...
+
+def validate_invariants(p: Profile) -> None      # raises ProfileInvariantError
+def orphan_skills(p: Profile) -> list[Skill]      # never raises
+```
+
+`validate_invariants` is called by `load_profile` and, on the post-mutation
+profile, by `update_profile` — most callers never call it directly.
+
+### `profile.lookup`
+
+```python
+def get_item(p: Profile, item_id: str) -> ProfileItem | None
+def get_skill(p: Profile, skill_id: str) -> Skill | None
+def resolve_surface(p: Profile, surface: str) -> Skill | None
+def find_skills(p: Profile, phrase: str, threshold: float = 0.6) -> list[Skill]
+def find_items(p: Profile, phrase: str, threshold: float = 0.6) -> list[ProfileItem]
+def items_demonstrating(p: Profile, skill_id: str) -> list[ProfileItem]
+```
+
+All pure, all `None`/`[]` on no match — none of them raise. `find_items` and
+`find_skills` **return a list, never a best guess** (§7's 0/1/N contract:
+zero or many candidates means the caller — the agent, typically — must
+clarify with the user rather than assume). `resolve_surface` is what the
+tailoring text guard uses to map a JD keyword to a competence id before
+checking it against an item's `demonstrated_skills` permission list.
+
+### `profile.projections`
+
+```python
+IDENTITY_CHAR_BUDGET: int = 200
+
+class IndexItem(BaseModel):
+    id: str
+    label: str
+
+class IndexView(BaseModel):
+    skills: list[IndexItem]
+    target_tracks: list[str]
+    experiences: list[IndexItem]
+    projects: list[IndexItem]
+
+def profile_summary(p: Profile) -> str
+def profile_to_text(p: Profile) -> str
+def index_view(p: Profile) -> IndexView
+```
+
+| Function | Caller | Contract |
+|---|---|---|
+| `profile_summary` | agent, every turn | identity verbatim, index as label list, body/render dropped. An identity scalar longer than `IDENTITY_CHAR_BUDGET` chars is treated as body and dropped. |
+| `profile_to_text` | scorer, at embed time | everything poured into one string, incl. `target_tracks`; email/phone/links/dates excluded. The scorer should fingerprint this string (SHA-256) to key its embedding cache — see § Integration. |
+| `index_view` | query regeneration | `skills`/`experiences`/`projects` as `{id, label}` (aliases and bullets dropped), plus `target_tracks` verbatim. |
+
+All three are pure functions — no I/O, safe to call on every turn/run.
+
+### `profile.advisory`
+
+```python
+def advise(op: ProfileOp, p: Profile) -> str | None
+```
+
+Never raises, never blocks. `update_profile` calls this internally and
+surfaces the result as `UpdateResult.advisory` — most callers will read it
+from there rather than calling `advise` directly. Currently returns non-`None`
+for `AddTargetTrack` (always) and `AddItem` (only when the new item has no
+`demonstrated_skills`); every other op returns `None`.
+
+### `profile.mutate` — the sole writer of `profile.json`
+
+```python
+class UpdateResult(BaseModel):
+    ok: bool
+    changed: bool
+    pending_confirmation: bool = False
+    diff: str | None = None
+    advisory: str | None = None
+    summary: str | None = None
+    queries_stale: bool = False
+
+def update_profile(op: ProfileOp, confirmed: bool, path: str | Path) -> UpdateResult
+```
+
+> Deviation from the original plan: `update_profile` takes `path` explicitly
+> rather than reading a package-level default. `src/profile/` has no
+> dependency on `app.config`; the caller supplies `settings.profile_path`.
+
+**Two-call contract**, matching § Write sequencing:
+
+1. Call with `confirmed=False` → nothing is written. Returns
+   `{ok: True, changed: False, pending_confirmation: True, diff, advisory}`.
+   Show `diff` (and `advisory`, if present) to the user.
+2. Call again with the **same `op`** and `confirmed=True` → backs up the
+   current file, writes the new one, returns
+   `{ok: True, changed: True, summary, queries_stale}`.
+3. If applying `op` would break an invariant (e.g. `edit_bullets` naming an
+   `item_id` that doesn't exist), **both** calls instead return
+   `{ok: False, changed: False, summary: "<reason>"}` and nothing is ever
+   written to disk — not even a backup.
+
+`queries_stale=True` means the caller (the agent) should tell the user to run
+`regenerate_queries`; `update_profile` never triggers that itself (§ "Why
+`update_profile` does not simply call `regenerate_queries` itself").
+
+**Typical caller sequence** (e.g. the agent's `update_profile` tool):
+
+```python
+from profile.loader import load_profile
+from profile.mutate import update_profile
+from profile.schema import AddTargetTrack
+
+op = AddTargetTrack(op="add_target_track", track="backend engineering")
+
+preview = update_profile(op, confirmed=False, path=settings.profile_path)
+if not preview.ok:
+    return preview.summary                    # rejected — nothing to confirm
+# show preview.diff / preview.advisory to the user, wait for confirmation
+
+result = update_profile(op, confirmed=True, path=settings.profile_path)
+if result.queries_stale:
+    ...                                        # prompt: run regenerate_queries?
+```
 
 ---
 
