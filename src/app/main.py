@@ -13,6 +13,8 @@ from app.routes.chat import router as chat_router
 from app.routes.follow_up import router as follow_up_router
 from app.services.service import JobService
 from dedup.fingerprint import fingerprint
+from scoring.embedder import LiteLLMEmbedder
+from scoring.embedding_scorer import EmbeddingScorer
 
 logger.add(
     "logs/app.log",
@@ -33,10 +35,16 @@ async def lifespan(app: FastAPI):
     app.state.job_service = JobService(db, fingerprint)
     logger.info("Database initialized, JobService constructed")
 
+    # Built once here so the profile-embedding cache (embedding_scorer.py)
+    # stays warm across an entire scheduled run — see scoring_v2.md §Integration.
+    app.state.scorer = EmbeddingScorer(LiteLLMEmbedder())
+    logger.info("EmbeddingScorer constructed")
+
     scheduler.start()
     logger.info("Scheduler started — mechanism only, no jobs registered yet")
     # Scheduler mechanism only — the scheduling layer (not yet built)
-    # registers actual jobs here via scheduler.add_job(...).
+    # registers actual jobs here via scheduler.add_job(...), reading
+    # app.state.scorer as its injected Scorer.
 
     yield
 

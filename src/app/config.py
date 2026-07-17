@@ -10,6 +10,10 @@ class Settings(BaseSettings):
     model: str = "gemini/gemini-2.0-flash-lite"
     model_api_key: str = ""
 
+    # Scoring — embedding model, separate key since the provider may differ
+    embedding_model: str = "text-embedding-3-small"
+    embedding_api_key: str = ""
+
     # Scraper
     tavily_api_key: str = ""
     scrape_query: str = "software engineer Singapore"
