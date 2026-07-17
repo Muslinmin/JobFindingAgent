@@ -33,7 +33,6 @@ env/
 #Personal data
 *profile.json
 profiles/
-src/tailoring_expectations/
 
 # IDEs
 .vscode/
