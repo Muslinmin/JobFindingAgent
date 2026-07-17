@@ -11,7 +11,7 @@ class Attachment(BaseModel):
     kind: ArtifactKind
     filename: str
     mime_type: str
-    content: str  # base64-encoded file bytes
+    content_b64: str  # base64-encoded file bytes
 
 
 class ChatRequest(BaseModel):

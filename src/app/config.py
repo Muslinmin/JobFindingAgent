@@ -19,8 +19,9 @@ class Settings(BaseSettings):
     scrape_query: str = "software engineer Singapore"
     scrape_max_results: int = 10
 
-    # Telegram
-    telegram_bot_token: str = ""
+    # Telegram — two bots, one token each, one shared authorised chat_id
+    telegram_chat_bot_token: str = ""
+    telegram_notifications_bot_token: str = ""
     telegram_chat_id: int = 0
 
     # Internal API
