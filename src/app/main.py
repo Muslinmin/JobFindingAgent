@@ -1,10 +1,12 @@
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import aiosqlite
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI
 from loguru import logger
 
+from agent.llm_client import AsyncLLMClient
 from app.config import settings
 from app.db.database import create_tables
 from app.exception_handlers import register_exception_handlers
@@ -13,8 +15,10 @@ from app.routes.chat import router as chat_router
 from app.routes.follow_up import router as follow_up_router
 from app.services.service import JobService
 from dedup.fingerprint import fingerprint
+from scheduler.bootstrap import SchedulerDeps, register_jobs, start_scheduler, stop_scheduler
 from scoring.embedder import LiteLLMEmbedder
 from scoring.embedding_scorer import EmbeddingScorer
+from scraper.protocol import JobSource
 from telegram_bot.shared.bootstrap import build_applications, start_bots, stop_bots
 
 logger.add(
@@ -52,15 +56,30 @@ async def lifespan(app: FastAPI):
     await start_bots(chat_app, notifications_app)
     logger.info("Both Telegram bots started")
 
-    scheduler.start()
-    logger.info("Scheduler started — mechanism only, no jobs registered yet")
-    # Scheduler mechanism only — the scheduling layer (not yet built)
-    # registers actual jobs here via scheduler.add_job(...), reading
-    # app.state.scorer as its injected Scorer.
+    # No adapters wired in yet. CareersGovSource is implemented and
+    # live-verified, but held out of the pipeline pending authorised
+    # developer access — see the note atop careers_gov_adapter.py and
+    # scraper_layer.md WP-S1. MCF unbuilt (WP-S2, recon in progress).
+    # JobStreet blocked (WP-S3).
+    adapters: list[JobSource] = []
+    scheduler_deps = SchedulerDeps(
+        service=app.state.job_service,
+        scorer=app.state.scorer,
+        llm=AsyncLLMClient(),
+        telegram=app.state.notification_client,
+        adapters=adapters,
+        profile_path=Path(settings.profile_path),
+        queries_path=Path(settings.search_queries_path),
+        template_path=Path(settings.tailoring_template_path),
+        output_dir=Path(settings.tailoring_output_dir),
+    )
+    register_jobs(scheduler, scheduler_deps, settings)
+    await start_scheduler(scheduler)
+    logger.info("Scheduler started — all six jobs registered")
 
     yield
 
-    scheduler.shutdown()
+    await stop_scheduler(scheduler)
     await stop_bots(chat_app, notifications_app)
     await db.close()
     logger.info("Scheduler, Telegram bots, and database connection shut down")

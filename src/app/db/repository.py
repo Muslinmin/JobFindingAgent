@@ -273,3 +273,53 @@ async def list_follow_up_candidates(db: aiosqlite.Connection, before: str) -> li
     )
     rows = await cursor.fetchall()
     return [_row_to_job(row) for row in rows]
+
+
+async def list_stale_scored(db: aiosqlite.Connection, before: str) -> list[Job]:
+    """SCORED records untouched since `before` — the lifecycle job's
+    stale-rejection bucket (scheduling_v2.md WP-S3)."""
+    db.row_factory = aiosqlite.Row
+    cursor = await db.execute(
+        """
+        SELECT * FROM jobs
+        WHERE status = ? AND status_changed_at < ?
+        ORDER BY status_changed_at
+        """,
+        (ApplicationStatus.SCORED.value, before),
+    )
+    rows = await cursor.fetchall()
+    return [_row_to_job(row) for row in rows]
+
+
+async def count_status_since(db: aiosqlite.Connection, status: ApplicationStatus, since: str) -> int:
+    """How many records transitioned INTO `status` at or after `since` —
+    the digest job's 'ghosted/expired in the last 7 days' counters
+    (scheduling_v2.md WP-S7). Distinct from list_ghost_candidates/
+    list_expired_pending_approval, which find records STILL SITTING in a
+    status past a threshold, for the lifecycle job to transition."""
+    db.row_factory = aiosqlite.Row
+    cursor = await db.execute(
+        "SELECT COUNT(*) AS n FROM jobs WHERE status = ? AND status_changed_at >= ?",
+        (status.value, since),
+    )
+    row = await cursor.fetchone()
+    return row["n"]
+
+
+async def list_second_nudge_candidates(db: aiosqlite.Connection, before: str) -> list[Job]:
+    """APPLIED records already nudged once whose last follow-up predates
+    `before` — the follow-up job's optional second-nudge bucket
+    (scheduling_v2.md WP-S4)."""
+    db.row_factory = aiosqlite.Row
+    cursor = await db.execute(
+        """
+        SELECT * FROM jobs
+        WHERE status = ?
+          AND follow_up_count = 1
+          AND last_follow_up_at < ?
+        ORDER BY status_changed_at
+        """,
+        (ApplicationStatus.APPLIED.value, before),
+    )
+    rows = await cursor.fetchall()
+    return [_row_to_job(row) for row in rows]

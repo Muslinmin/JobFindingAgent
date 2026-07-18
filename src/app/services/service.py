@@ -85,3 +85,25 @@ class JobService:
         if job is None:
             raise JobNotFoundError(f"job {job_id} not found")
         return job
+
+    # ── Lifecycle & follow-up job reads (scheduling_v2.md WP-S3/WP-S4) ──
+    # Each returns records already filtered by the relevant time rule —
+    # the scheduler jobs never build these WHERE clauses themselves.
+
+    async def list_expired_pending_approval(self, before: str) -> list[Job]:
+        return await repo.list_expired_pending_approval(self._db, before)
+
+    async def list_stale_scored(self, before: str) -> list[Job]:
+        return await repo.list_stale_scored(self._db, before)
+
+    async def list_ghost_candidates(self, before: str) -> list[Job]:
+        return await repo.list_ghost_candidates(self._db, before)
+
+    async def list_follow_up_candidates(self, before: str) -> list[Job]:
+        return await repo.list_follow_up_candidates(self._db, before)
+
+    async def list_second_nudge_candidates(self, before: str) -> list[Job]:
+        return await repo.list_second_nudge_candidates(self._db, before)
+
+    async def count_status_since(self, status: ApplicationStatus, since: str) -> int:
+        return await repo.count_status_since(self._db, status, since)
