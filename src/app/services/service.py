@@ -38,12 +38,14 @@ class JobService:
         fingerprint = self._fingerprint_fn(job)
         return await repo.upsert_job(self._db, job, fingerprint, _now())
 
-    async def transition_status(self, job_id: int, to_status: ApplicationStatus) -> Job:
+    async def transition_status(
+        self, job_id: int, to_status: ApplicationStatus, score: int | None = None
+    ) -> Job:
         current = await repo.get_job_by_id(self._db, job_id)
         if current is None:
             raise JobNotFoundError(f"job {job_id} not found")
         transition(current.status, to_status)
-        return await repo.write_status(self._db, job_id, to_status, _now())
+        return await repo.write_status(self._db, job_id, to_status, _now(), score=score)
 
     async def query_jobs(
         self,

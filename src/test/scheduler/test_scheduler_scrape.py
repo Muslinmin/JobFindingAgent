@@ -186,7 +186,7 @@ async def test_score_at_or_above_threshold_transitions_to_scored():
     with _patch_load_profile():
         await _fan_out(["engineer"], [adapter], service, scorer, PROFILE_PATH, _Settings(), delay_s=0)
 
-    service.transition_status.assert_called_once_with(1, ApplicationStatus.SCORED)
+    service.transition_status.assert_called_once_with(1, ApplicationStatus.SCORED, score=7000)
 
 
 async def test_score_below_threshold_transitions_to_rejected():
@@ -197,7 +197,7 @@ async def test_score_below_threshold_transitions_to_rejected():
     with _patch_load_profile():
         await _fan_out(["engineer"], [adapter], service, scorer, PROFILE_PATH, _Settings(), delay_s=0)
 
-    service.transition_status.assert_called_once_with(1, ApplicationStatus.REJECTED)
+    service.transition_status.assert_called_once_with(1, ApplicationStatus.REJECTED, score=6999)
 
 
 async def test_duplicate_hit_is_not_scored():

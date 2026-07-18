@@ -48,3 +48,4 @@ Thumbs.db
 
 # Tailoring — locally rendered CVs for manual inspection
 tailoring_output/
+artifacts/

@@ -21,13 +21,21 @@ class Embedder(Protocol):
 
 
 class LiteLLMEmbedder:
-    def __init__(self, model: str | None = None):
+    def __init__(self, model: str | None = None, timeout: float = 30.0):
         self.model = model or settings.embedding_model
+        # Without an explicit timeout, a stalled connection to the
+        # embeddings provider hangs indefinitely — litellm/httpx apply no
+        # default. Bounding it means a bad request fails fast (raises) and
+        # surfaces as a normal scoring failure (scoring_v2.md: "the scorer
+        # raises rather than fabricating a 0"), instead of blocking the
+        # entire scrape run.
+        self.timeout = timeout
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
         response = await aembedding(
             model=self.model,
             input=texts,
             api_key=settings.embedding_api_key or None,
+            timeout=self.timeout,
         )
         return [item["embedding"] for item in response.data]

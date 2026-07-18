@@ -1,4 +1,23 @@
+from pathlib import Path
+
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _default_tailoring_template_path() -> str:
+    """Absolute, resolved from this file's own location rather than a bare
+    relative string — the template is a bundled source asset under
+    src/tailoring/templates/, not a user-facing working-directory path
+    like profile_path/search_queries_path/tailoring_output_dir. A plain
+    relative default breaks the moment the process's cwd isn't `src/`
+    (e.g. running from the repo root, as pytest and most launchers do):
+    Jinja2's FileSystemLoader resolves relative paths against cwd, not
+    this file, so `"tailoring/templates/cv.tex.jinja"` silently pointed at
+    a directory that doesn't exist from the repo root and raised
+    TemplateNotFound — caught live by test_pipeline_live.py. Same pattern
+    already used by tailoring/prompt.py's _DOMAIN_KNOWLEDGE_PATH and
+    app/tailoring_usage_example.py's TEMPLATE_PATH."""
+    return str(Path(__file__).resolve().parent.parent / "tailoring" / "templates" / "cv.tex.jinja")
 
 
 class Settings(BaseSettings):
@@ -42,7 +61,7 @@ class Settings(BaseSettings):
 
     # Scheduling — pipeline throttles and time-rule thresholds
     tailor_batch_size: int = 10
-    score_threshold: int = 7000
+    score_threshold: int = 5000
     follow_up_after_days: int = 7
     pending_expiry_days: int = 14
     stale_after_days: int = 14
@@ -51,7 +70,7 @@ class Settings(BaseSettings):
     # Scheduling — file paths and misc job settings
     search_queries_path: str = "search_queries.json"
     adapter_delay_s: float = 1.0
-    tailoring_template_path: str = "tailoring/templates/cv.tex.jinja"
+    tailoring_template_path: str = Field(default_factory=_default_tailoring_template_path)
     tailoring_output_dir: str = "artifacts"
     digest_narrative: bool = False
 

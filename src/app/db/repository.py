@@ -89,17 +89,27 @@ async def get_job_by_id(db: aiosqlite.Connection, job_id: int) -> Job | None:
 
 
 async def write_status(
-    db: aiosqlite.Connection, job_id: int, next_status: ApplicationStatus, now: str
+    db: aiosqlite.Connection,
+    job_id: int,
+    next_status: ApplicationStatus,
+    now: str,
+    score: int | None = None,
 ) -> Job | None:
+    """`score` is optional: most transitions (EXPIRED, GHOSTED, TAILORED, ...)
+    don't touch it, so COALESCE(?, score) leaves the existing value alone
+    when None is passed. The scrape job's DISCOVERED -> SCORED/REJECTED
+    transition is the one caller that supplies a real value — the only
+    point in the pipeline a job's score is ever computed
+    (scoring_v2.md: "score once, store, never recompute")."""
     db.row_factory = aiosqlite.Row
     cursor = await db.execute(
         """
         UPDATE jobs
-        SET status = ?, status_changed_at = ?, updated_at = ?
+        SET status = ?, score = COALESCE(?, score), status_changed_at = ?, updated_at = ?
         WHERE id = ?
         RETURNING *
         """,
-        (next_status.value, now, now, job_id),
+        (next_status.value, score, now, now, job_id),
     )
     row = await cursor.fetchone()
     await db.commit()

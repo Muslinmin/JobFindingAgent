@@ -70,7 +70,11 @@ async def _ingest_and_score(
     """Ingest each job via `service.ingest_job` (dedup + upsert happens
     there). For a job that landed at DISCOVERED (i.e. genuinely new, not a
     repost bump of `seen_count`), `load_profile(profile_path)` and score it,
-    gating SCORED vs REJECTED on `settings.score_threshold`. A scoring
+    gating SCORED vs REJECTED on `settings.score_threshold`. The computed
+    integer is passed to `transition_status(..., score=score)` so it is
+    stamped once and never recomputed (scoring_v2.md: "score once, store,
+    never recompute") — every other caller of `transition_status` in this
+    package omits `score`, leaving the stored value untouched. A scoring
     failure (scoring_v2.md: the scorer raises rather than fabricating a 0)
     is caught per-record here and logged — the job is left at DISCOVERED
     for the next run to retry, matching invariant 5 (one record's failure
@@ -113,7 +117,7 @@ async def _ingest_and_score(
             ApplicationStatus.SCORED if score >= settings.score_threshold else ApplicationStatus.REJECTED
         )
         try:
-            await service.transition_status(job.id, next_status)
+            await service.transition_status(job.id, next_status, score=score)
         except Exception:
             logger.warning(f"scrape: transition_status failed for job {job.id}")
 
