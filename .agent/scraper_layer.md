@@ -1,5 +1,21 @@
 # Scraper Layer — Implementation Playbook
 
+> ⚠️ **NOT ADVISABLE AS-IS.** Everything below — reverse-engineering an
+> Algolia key out of a site's frontend JS (Careers@Gov), hitting an
+> undocumented `/v2/search` + per-job `/v2/jobs/{uuid}` endpoint (MCF), and
+> the now-abandoned attempt against a Cloudflare-gated, robots.txt-disallowed
+> site (JobStreet) — is scraping against endpoints that were never published
+> for third-party programmatic use. Singapore's official developer guide for
+> government data, **https://guide.data.gov.sg**, describes the sanctioned
+> path: register for an **API key** through data.gov.sg's own Dataset/
+> Real-Time API program (`developer-guide/api-overview`,
+> `how-to-request-an-api-key`) and consume data through that, not by scraping
+> a portal's frontend. Careers@Gov is already held out of the active
+> pipeline for exactly this reason — see WP-S1 below — and none of this
+> should be treated as a template for how to reach other `.gov.sg` data.
+> Before building further on this file, check whether the target data is
+> available through data.gov.sg's own API catalogue first.
+
 **Audience:** an agent (or human) implementing the scraper layer of JobFindingAgent end to end.
 
 **Read first:** `adapters.md` (adapter contract and recon playbook), `architecture_v2.md` (scraper layer section), `careers_gov_adapter.py` (reference implementation), `job.py` (canonical `JobCreate` schema).
@@ -12,9 +28,9 @@ The scraper layer has four work packages, executed in dependency order:
 
 | WP | Description | Status |
 |---|---|---|
-| WP-S1 | Careers@Gov adapter — finalise and test | Code exists, needs alignment + tests |
-| WP-S2 | MCF adapter — implement from scratch | Recon done, ready to build |
-| WP-S3 | JobStreet adapter — recon then implement | Recon incomplete, do not build yet |
+| WP-S1 | Careers@Gov adapter — finalise and test | Built + live-verified (2026-07-18), but **held out of `main.py`'s active adapters pending authorised developer access** — application in progress, do not re-wire until resolved |
+| WP-S2 | MCF adapter — implement from scratch | Recon in progress (2026-07-18) |
+| WP-S3 | JobStreet adapter — recon then implement | Recon complete (2026-07-18) — **blocked, do not implement** |
 
 
 ---
@@ -33,103 +49,56 @@ The scraper layer has four work packages, executed in dependency order:
 
 ## WP-S1 — Careers@Gov adapter finalisation
 
-### What exists
+### Status (2026-07-18): implemented and live-verified, but held out of the pipeline
 
-`careers_gov_adapter.py` is implemented and live-verified (2026-06-10). Two things need fixing before it is wired in:
+**Access note (2026-07-18):** the credentials this adapter was built and live-tested against were read out of jobs.careers.gov.sg's own frontend JS bundle (devtools-visible), not issued through an authorised channel. Requiring `app_id`/`api_key` at all is itself a signal that this is a gated Algolia index, not an anonymous one. The account owner is currently applying for proper Careers@Gov developer access and doesn't have it yet — `main.py` does NOT include `CareersGovSource` in its active adapters list, and `.env`'s `CAREERS_GOV_APP_ID`/`CAREERS_GOV_API_KEY` are intentionally blank. **Do not wire this adapter back in, or paste devtools-sourced credentials into `.env`, until authorisation comes through.** The code and tests are otherwise complete and ready to go the moment real credentials exist.
 
-- `to_job_create()` returns `dict[str, Any]` → must return `JobCreate`
-- `posted_at` is buried in `metadata` → must be a top-level `JobCreate` field
-- `description=""` (empty string) must normalise to `None` to match `JobCreate`'s `str | None` field
+**Correction to the original doc:** `careers_gov_adapter.py` was found to be a one-off recon script (module-level `httpx.post()` that ran on import, hardcoded `APP_ID`/`API_KEY`, no class, no `fetch()`, no `to_job_create()`) — not the "code exists, needs alignment" state this section originally described. Recon itself was solid (endpoint, headers, index name confirmed live), so this ended up being a from-scratch implementation rather than a fixup.
 
-### Implementation tasks
+**Schema deviation:** `JobCreate.description` (`app/models/job.py`) is `str`, not `str | None` — it always has been. The original instruction to normalise `description=""` → `None` can't work against the current schema, and changing `description` to `str | None` would ripple into `scorer.score(job.description, ...)` (scheduler/jobs/scrape.py) and the tailoring renderer, both of which assume a string. Rather than touch the shared schema for this adapter, empty descriptions normalise to `""` (a no-op), not `None`. Revisit only if another adapter also needs `None` and the schema change is made deliberately, with the downstream callers updated too.
 
-1. Fix `to_job_create()`:
-   - Change return type annotation to `JobCreate`
-   - Move `posted_at` out of `metadata` dict and into the `JobCreate` constructor directly
-   - Normalise `description`: pass `hit.description or None` (empty string → `None`)
-   - Remove `posted_at` from `metadata` dict
-2. Fix `fetch()` return type annotation: `list[dict[str, Any]]` → `list[JobCreate]`
-3. Capture a real Algolia response payload. Trim to 3–5 hits. Include at least one HRP objectID and one GREENHOUSE objectID. Save as `tests/fixtures/careers_gov_response.json`.
-4. Write tests (see specifications below).
+Everything else — Algolia endpoint/headers/index, HRP/GREENHOUSE `objectID` → detail-URL construction, `agency → agencyAbbr → "Singapore Public Service"` company fallback, `posted_at` as a top-level field (epoch-ms `activityTimestamp` → ISO-8601 string, kept out of `metadata`) — matches the original spec.
 
-### Test specifications
+### What was built
 
-File: `tests/unit/test_careers_gov_adapter.py`
+- `app/config.py`: `careers_gov_app_id`, `careers_gov_api_key`, `careers_gov_index`, `careers_gov_hits_per_page` settings (all empty/default until put in `.env`; adapter returns `[]` and logs a warning if unconfigured, same pattern as `tavily_client.py`)
+- `scraper/careers_gov_adapter.py`: `CareersGovSource` class implementing the `JobSource` protocol — `name`, constructor (`client`/`settings`/optional credential overrides), `async fetch(query) -> list[JobCreate]`, `_to_job_create()`
+- `src/test/fixtures/careers_gov_response.json` — 4 real hits captured live 2026-07-18 (1 HRP with agency, 1 GREENHOUSE, 1 HRP with `agency`/`agencyAbbr` both `""`, 1 HRP with `description` == `""`)
+- `src/test/unit/test_careers_gov_adapter.py` — 14 tests, all passing
+- `src/test/integration/test_careers_gov_live.py` — `@pytest.mark.live` smoke test, passing against the real endpoint (skips automatically if credentials aren't set)
 
-```
-test_careers_gov_happy_path
-  Load careers_gov_response.json fixture (3–5 hits, mix of HRP and GREENHOUSE objectIDs)
-  Instantiate CareersGovSource with dummy app_id / api_key and a mock client returning the fixture
-  Call await fetch("engineer")
-  Assert: returns list of JobCreate instances (not dicts)
-  Assert: len(result) == number of hits in fixture
-  Assert: result[0].company == fixture hit agency (or fallback chain: agency → agency_abbr → "Singapore Public Service")
-  Assert: result[0].role == fixture hit title
-  Assert: result[0].source == "careers_gov"
-  Assert: result[0].posted_at is a timezone-aware datetime (not None)
-  Assert: "posted_at" not in result[0].metadata
-
-test_careers_gov_url_construction_hrp
-  Fixture hit has objectID "HRP:17676105/005056a3-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-  Assert: str(result.url) == "https://jobs.careers.gov.sg/005056a3-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-
-test_careers_gov_url_construction_greenhouse
-  Fixture hit has objectID "GREENHOUSE:4004142201"
-  Assert: str(result.url) == "https://jobs.careers.gov.sg/4004142201"
-
-test_careers_gov_description_empty_becomes_none
-  Fixture hit has description == "" (empty string)
-  Assert: result.description is None
-
-test_careers_gov_empty_hits
-  Mock client returns {"hits": [], "nbHits": 0, "page": 0, "nbPages": 0}
-  Assert: returns []
-  Assert: no warning logged
-
-test_careers_gov_malformed_payload
-  Mock client returns {"unexpected": "shape"}
-  Assert: returns []
-  Assert: logger.warning called once, message contains "careers_gov"
-
-test_careers_gov_http_error
-  Mock client raises httpx.HTTPStatusError (e.g. 403)
-  Assert: returns []
-  Assert: logger.warning called once, message contains "careers_gov"
-
-@pytest.mark.live
-test_careers_gov_live_smoke
-  Instantiate CareersGovSource with real credentials from environment
-  Call await fetch("software engineer")
-  Assert: returns list, len > 0
-  Assert: all items are JobCreate instances
-  Assert: no item has posted_at in its metadata dict
-```
+Note on paths: this repo's actual test convention is `src/test/unit/` and `src/test/integration/` (see `test_tavily_client.py` / `test_tavily_live.py`), not the `tests/unit/` / `tests/fixtures/` paths named in the original spec below — the file layout section at the bottom of this doc has been corrected to match.
 
 ### Definition of done
 
-- All unit tests pass
-- `mypy` reports no errors on the adapter module
-- `@pytest.mark.live` smoke test passes against the real endpoint
-- `architecture_v2.md` adapter table updated with live-test date and verdict
+- [x] All unit tests pass (14/14)
+- [x] `mypy` reports no errors on the adapter module
+- [x] `@pytest.mark.live` smoke test passes against the real endpoint
+- [x] `architecture_v2.md` adapter table updated with live-test date and verdict
 
 ---
 
 ## WP-S2 — MCF adapter
 
-### What is known from recon (2026-06-10)
+### Recon complete (2026-07-18)
 
-- Keyword search: `POST https://api.mycareersfuture.gov.sg/v2/search` with a JSON body
-- No authentication required
-- Known payload fields: full HTML `description`, salary min/max/type, `skills[]`, `categories[]`, `employmentTypes[]`, `positionLevels[]` (includes "Fresh/entry level"), company UEN, `metadata.jobDetailsUrl` (canonical URL — use it directly, do not construct)
-- `description` is HTML — must be stripped to plain text before passing to `JobCreate`
+Confirmed live, no auth, no special headers required (tested with a bare `curl -X POST`, no `User-Agent`/`Content-Type` even needed, though sending `Content-Type: application/json` is obviously correct practice). `robots.txt` on `www.mycareersfuture.gov.sg` is wide open (`Disallow:` empty, no `anthropic-ai` block, unlike JobStreet); `api.mycareersfuture.gov.sg/robots.txt` 404s, which is normal for a pure API host.
 
-### Recon remaining before implementation
+- **Search**: `POST https://api.mycareersfuture.gov.sg/v2/search`, JSON body `{"search": "<query>"}`. No auth.
+- **Pagination is via query string, not the JSON body**: `?limit=20&page=N` (confirmed from the response's own `_links.next/self/first/last` HATEOAS URLs). `page`/`limit` keys inside the POST body are silently ignored — a body of `{"search": "...", "page": 1}` returns page 0 every time. `limit` appears fixed at 20 regardless of what's requested.
+- Envelope: `{"_links", "searchRankingId", "results", "total", "countWithoutFilters"}`. `results` is the hit list.
 
-- Capture the exact `POST /v2/search` request body via DevTools (field names, pagination shape)
-- Verify the canonical URL is indeed `metadata.jobDetailsUrl`
-- Confirm `posted_at` equivalent field name in the payload
-- Verify payload ceiling: does one request return full JD text, or is a detail call needed?
-- Save a trimmed real response (3–5 hits) as `tests/fixtures/mcf_response.json`
+**⚠️ Correction to `architecture_v2.md`'s 2026-06-10 finding — this is the important one:** search results do **NOT** include `description`. A `/v2/search` hit's keys are `address, categories, employmentTypes, flexibleWorkArrangements, hiringCompany, job_role_score, metadata, positionLevels, postedCompany, recency_score, retriever_score, salary, schemes, score, shiftPattern, skills, skills_match_score, status, title, title_match_score, uuid` — no `description` anywhere. The full HTML JD only exists behind a **separate detail call**: `GET https://api.mycareersfuture.gov.sg/v2/jobs/{uuid}`, confirmed live (returns `description` as HTML, e.g. `<p>...</p><ul><li>...`). **This means `McfSource.fetch()` cannot be a single request per query — it's 1 search call + up to `limit` detail calls (one per hit) to get real JD text.** That's a real design fork someone needs to decide before implementing (see below), not a "~50 lines of httpx" adapter as originally estimated.
+
+- **Company**: `postedCompany` (name/UEN) is always present — usually the actual employer, but when a recruitment agency posts on someone's behalf, `postedCompany` is the *agency* and `hiringCompany` (present, non-null in that case) is the real end employer. Fallback chain should be `hiringCompany.name → postedCompany.name` (agency is the fallback, not the primary), confirmed live via a real agency-posted listing (Hansing Recruitment posting for Newland Payment Technology).
+- **`posted_at` candidate**: `metadata.newPostingDate` (date-only, e.g. `"2026-07-14"`) — `metadata.updatedAt` also exists (`"2026-07-14T02:46:01"`, no timezone marker) but reads as a last-modified timestamp, not the original posting date. Recommend `newPostingDate`.
+- **Canonical URL**: `metadata.jobDetailsUrl` confirmed — full absolute URL, use directly, don't construct.
+- **`positionLevels[]`** confirmed as `[{"id": int, "position": str}]`; observed values so far: `Professional`, `Junior Executive`, `Senior Executive`, `Executive` (didn't happen to see "Fresh/entry level" in this sample, but the field shape is confirmed).
+- Fixtures captured: `src/test/fixtures/mcf_search_response.json` (3 real hits — 2 normal + 1 agency-posted with `hiringCompany` populated) and `src/test/fixtures/mcf_detail_response.json` (2 real detail responses keyed `normal`/`agency_posted`, both with real HTML `description`).
+
+### Open design question before implementing (not decided — flagging for whoever builds this)
+
+Given description requires a per-hit detail call: does `fetch(query)` (a) make all N detail calls inline before returning (simple, but `hitsPerPage` × HTTP round-trips per query, needs its own delay/throttle beyond the existing per-adapter `delay_s`), or (b) return search-level `JobCreate`s with a short/no description and accept weaker JD text (cheap, matches the old v1 Tavily limitation this whole rewrite was meant to fix), or (c) some capped/batched middle ground? This wasn't resolved during recon — worth a decision before WP-S2 implementation starts.
 
 ### Implementation tasks
 
@@ -142,31 +111,35 @@ test_careers_gov_live_smoke
    - Put salary range, `positionLevels`, `employmentTypes`, UEN into `metadata`
 4. Write tests (see specifications below)
 
-### Test specifications
+### Test specifications (still a shell — implementation not started; resolve the open design question above first)
 
-File: `tests/unit/test_mcf_adapter.py`
+File: `src/test/unit/test_mcf_adapter.py` (repo convention — not `tests/unit/`). Fixtures already captured: `src/test/fixtures/mcf_search_response.json`, `src/test/fixtures/mcf_detail_response.json`.
 
 ```
 test_mcf_happy_path
-  Load mcf_response.json fixture (3–5 hits)
-  Instantiate McfSource with mock client returning the fixture
+  Load mcf_search_response.json (+ mcf_detail_response.json if the detail-call design is chosen)
+  Instantiate McfSource with mock client returning the fixture(s)
   Call await fetch("software engineer")
   Assert: returns list of JobCreate instances
-  Assert: len(result) == number of hits in fixture
+  Assert: len(result) == number of hits in the search fixture
   Assert: result[0].source == "mcf"
-  Assert: result[0].url == fixture hit metadata.jobDetailsUrl   [fill exact key from fixture]
+  Assert: result[0].url == fixture hit metadata.jobDetailsUrl   [confirmed key]
   Assert: result[0].description contains no HTML tags
-  Assert: result[0].posted_at is a timezone-aware datetime      [fill field name from fixture]
+  Assert: result[0].posted_at is a timezone-aware value derived from metadata.newPostingDate [confirmed key]
   Assert: "posted_at" not in result[0].metadata
-  Assert: "salary_min" in result[0].metadata                    [fill exact key from fixture]
-  Assert: "position_levels" in result[0].metadata               [fill exact key from fixture]
+  Assert: "salary_min" in result[0].metadata                    [from salary.minimum]
+  Assert: "position_levels" in result[0].metadata               [from positionLevels[].position]
+
+test_mcf_company_prefers_hiring_company_over_posted_company
+  Use the agency-posted hit in the fixture (hiringCompany populated)
+  Assert: result.company == hiringCompany.name, not postedCompany.name (the agency)
 
 test_mcf_html_stripped_from_description
   Fixture hit description field contains "<p>Some <b>bold</b> text.</p>"
   Assert: result.description == "Some bold text."
 
 test_mcf_empty_results
-  Mock client returns fixture with empty results array           [fill envelope key from fixture]
+  Mock client returns {"results": [], "total": 0, "countWithoutFilters": 0}
   Assert: returns []
 
 test_mcf_malformed_payload
@@ -181,7 +154,7 @@ test_mcf_http_error
 
 @pytest.mark.live
 test_mcf_live_smoke
-  Instantiate McfSource with real settings
+  Instantiate McfSource with real settings (no auth needed)
   Call await fetch("software engineer")
   Assert: returns list, len > 0
   Assert: all items are JobCreate instances
@@ -190,6 +163,7 @@ test_mcf_live_smoke
 
 ### Definition of done
 
+- Open design question above resolved (inline detail calls vs. search-only vs. capped/batched)
 - All unit tests pass
 - `mypy` reports no errors on the adapter module
 - `@pytest.mark.live` smoke test passes
@@ -199,76 +173,35 @@ test_mcf_live_smoke
 
 ## WP-S3 — JobStreet adapter
 
-### Current recon status
+### Recon findings (2026-07-18) — BLOCKED, do not implement
 
-Plain GET on `sg.jobstreet.com/{query}-jobs` returns server-rendered HTML. Listing data is in markup attributes but not recoverable via naive text extraction. **Recon is incomplete — do not write any implementation code until the to-do list below is fully resolved.**
+Two independent blockers, either one alone is sufficient to stop here:
 
-### Recon to-do list
+1. **Cloudflare bot-challenge on listing pages.** `GET sg.jobstreet.com/software-engineer-jobs` (realistic desktop UA + `Accept-Language` header) returns an HTTP 200 shell that is actually a Cloudflare "Just a moment..." Turnstile challenge page (`cf-cache-status: DYNAMIC`, CSP referencing `challenges.cloudflare.com`). No `__NEXT_DATA__`, no listing data — the page cannot render without solving a JS challenge. This alone classifies the listing route as bot-defended / Hard tier.
 
-Complete these steps before writing any code. Record every finding — they become the doc update.
+2. **robots.txt explicitly disallows AI agents from job content.** `sg.jobstreet.com/robots.txt` has a dedicated block:
+   ```
+   User-agent: anthropic-ai
+   Disallow: /companies
+   Disallow: */job/*
+   ```
+   `/graphql` and `/api/jobsearch/` are also disallowed for `User-agent: *`. This means job listing/detail pages are off-limits to Claude/Anthropic-driven scraping regardless of technical feasibility — this is a policy blocker independent of the Cloudflare issue.
 
-```
+**Verdict: do not implement a JobStreet adapter.** The old ad-hoc recon script (`jobstreet_adapter.py`, which fetched `*/job/{id}` pages) has been removed since re-running it would violate the robots.txt directive above. If JobStreet coverage becomes a hard requirement later, it would need an authorized/licensed data path (e.g. an official partner API), not scraping — re-open this WP only if that changes.
 
-
-[ ] Check __NEXT_DATA__ in page source:
-      - curl sg.jobstreet.com/<query>-jobs
-      - grep for __NEXT_DATA__ in the HTML
-      - If present: extract, parse as JSON, assess whether it contains full listing data
-
-[ ] If a JSON endpoint is found:
-      - Copy as cURL, run verbatim, then strip headers one by one to find the minimum required set
-      - Verify payload ceiling: full JD text in one request, or detail call needed?
-      - Identify the canonical listing URL field
-      - Classify: Easy (JSON, stable) or Medium (HTML parsing, brittle)
-
-[ ] If HTML-only route:
-      - Identify which markup attributes or script blobs carry listing data
-      - Assess brittleness
-      - Classify as Medium or Hard
-
-[ ] If Hard tier or bot-defended:
-      - Write up findings in architecture_v2.md and adapters.md ledger
-      - Do NOT implement; stop and report back
-
-[ ] After successful recon:
-      - Capture a real response payload (JSON or HTML page)
-      - Trim to 3–5 results
-      - Save as tests/fixtures/jobstreet_response.json (or .html)
-      - Fill in the test shells below with actual field names and assertions
-```
-
-### Test specifications (shell — complete after recon)
-
-File: `tests/unit/test_jobstreet_adapter.py`
+### Recon to-do list (completed 2026-07-18, kept for reference)
 
 ```
-test_jobstreet_happy_path
-  [TODO: fill field assertions after recon and fixture capture]
-  Assert: returns list of JobCreate instances
-  Assert: result[0].source == "jobstreet"
-  Assert: result[0].description contains no HTML tags (if HTML source)
-  Assert: "posted_at" not in result[0].metadata
-
-test_jobstreet_empty_results
-  [TODO: fill envelope key after recon]
-  Assert: returns []
-
-test_jobstreet_malformed_payload
-  Mock client returns {"unexpected": "shape"}
-  Assert: returns []
-  Assert: logger.warning called once, message contains "jobstreet"
-
-test_jobstreet_http_error
-  Mock client raises httpx.HTTPStatusError
-  Assert: returns []
-  Assert: logger.warning called once, message contains "jobstreet"
-
-@pytest.mark.live
-test_jobstreet_live_smoke
-  [TODO: fill after recon]
-  Assert: returns list, len > 0
-  Assert: all items are JobCreate instances
+[x] Check __NEXT_DATA__ in page source → not reachable, Cloudflare challenge intercepts the listing page
+[x] Check robots.txt → explicit anthropic-ai Disallow on /companies and */job/*
+[x] Classify → Hard tier / bot-defended
+[x] Write up findings → this section
+[x] Do NOT implement → confirmed, stopping here
 ```
+
+### Test specifications
+
+Moot — WP-S3 is blocked (see recon findings above). No adapter, no tests, no fixture. Do not resurrect this section without re-opening the WP first.
 
 ---
 
@@ -277,22 +210,21 @@ test_jobstreet_live_smoke
 
 ## File layout
 
+Note: paths below use this repo's actual test convention (`src/test/...`), not a root-level `tests/` dir. WP-S3 (JobStreet) is blocked — no adapter or test files for it.
+
 ```
 src/
   scraper/
     careers_gov_adapter.py   # WP-S1
     mcf_adapter.py           # WP-S2
-    jobstreet_adapter.py     # WP-S3
 
-tests/
-  unit/
-    test_careers_gov_adapter.py
-    test_mcf_adapter.py
-    test_jobstreet_adapter.py
-  fixtures/
-    careers_gov_response.json   # WP-S1 — capture before writing tests
-    mcf_response.json           # WP-S2 — capture during recon
-    jobstreet_response.json     # WP-S3 — capture during recon (.html if HTML-only)
+  test/
+    unit/
+      test_careers_gov_adapter.py
+      test_mcf_adapter.py
+    fixtures/
+      careers_gov_response.json   # WP-S1 — capture before writing tests
+      mcf_response.json           # WP-S2 — capture during recon
 ```
 
 ---

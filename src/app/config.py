@@ -19,6 +19,12 @@ class Settings(BaseSettings):
     scrape_query: str = "software engineer Singapore"
     scrape_max_results: int = 10
 
+    # Scraper — Careers@Gov adapter (Algolia index behind jobs.careers.gov.sg)
+    careers_gov_app_id: str = ""
+    careers_gov_api_key: str = ""
+    careers_gov_index: str = "job_index"
+    careers_gov_hits_per_page: int = 20
+
     # Telegram — two bots, one token each, one shared authorised chat_id
     telegram_chat_bot_token: str = ""
     telegram_notifications_bot_token: str = ""

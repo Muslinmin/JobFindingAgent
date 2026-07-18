@@ -1,0 +1,459 @@
+{
+  "normal": {
+    "uuid": "c50222fb764dbabbff2d5160d8d3a0ea",
+    "sourceCode": "Employer Portal",
+    "title": "Software Engineer",
+    "description": "<p>As a Software Engineer with Graviton your responsibilities will include:</p><ul><li>Contribute to all layers of backend systems including databases, APIs and applications</li><li>Design, build and maintain applications for business requirements</li><li>Architect scalable and reliable applications</li><li>Write clean and modular code, following good coding standards and practices</li><li>Troubleshoot and debug applications</li><li>Be involved in the entire application lifecycle</li><li>Collaborate with multidisciplinary team of front-end developers, engineers and system administrators</li><li>Devise innovative solutions to address new and complicated challenges</li><li>Build reusable code and libraries for future use</li><li>Take lead on projects, as needed</li><li>Work in a high paced competitive environment.</li></ul><h3><strong>Qualifications</strong></h3><p>The ideal candidate will have:</p><ul><li>Engineering degree in Computer Science (preferred) or in any other degree. </li><li>1 to 2 years of relevant experience in designing and improving information systems</li><li>Proficiency in Python programming</li><li>Extensive experience working with relational databases and handling large datasets</li><li>Good Understanding of object oriented and asynchronous programming</li><li>Familiarity with front-end languages such as HTML, JavaScript and CSS</li><li>Knowledge of Linux systems and bash scripting</li><li>Good communication and interpersonal skills</li><li>Willingness to continuously learn and improve</li><li>Ability to work in fast paced environment under pressure and manage multiple high priority projectsAny of the following is a plus:</li><li>A good understanding of TCP/IP and Ethernet</li><li>Knowledge of any other programming language e.g. Java, Scala, Python, bash, Lisp, etc.</li><li>Familiarity with parallel programming models and parallel algorithms</li><li>Experience with big data environments e.g. Hadoop, Spark etc.</li></ul><p><strong>Good to have:</strong></p><ul><li>Experience in Financial services space/domain</li><li>Experience in and understanding of system design decisions</li><li>Experience in leading small teams or projects</li></ul><h3><br /></h3>",
+    "minimumYearsExperience": 1,
+    "shiftPattern": null,
+    "schemes": [],
+    "skills": [
+      {
+        "skill": "Scala",
+        "uuid": "3012dcff1477e1feaab81764587c9bbd",
+        "confidence": null,
+        "isKeySkill": false
+      },
+      {
+        "skill": "Automated Trading",
+        "uuid": "32f390471d171acf29df7ae1401c84db",
+        "confidence": null,
+        "isKeySkill": false
+      },
+      {
+        "skill": "Data Structures",
+        "uuid": "49110ba9c7e157360ed1b72f643bc1a3",
+        "confidence": null,
+        "isKeySkill": false
+      },
+      {
+        "skill": "Software Engineering",
+        "uuid": "607c057459161394d748df802b30f07b",
+        "confidence": null,
+        "isKeySkill": false
+      },
+      {
+        "skill": "JavaScript",
+        "uuid": "686155af75a60a0f6e9d80c1f7edd3e9",
+        "confidence": null,
+        "isKeySkill": false
+      },
+      {
+        "skill": "Trading System",
+        "uuid": "84224bcbfcae053200cb98ab1d1d1119",
+        "confidence": null,
+        "isKeySkill": false
+      },
+      {
+        "skill": "Python",
+        "uuid": "a7f5f35426b927411fc9231b56382173",
+        "confidence": null,
+        "isKeySkill": false
+      },
+      {
+        "skill": "Ethernet",
+        "uuid": "be2ae05fb04ddcf6efa31e63e0f0e111",
+        "confidence": null,
+        "isKeySkill": false
+      },
+      {
+        "skill": "Lisp",
+        "uuid": "d4f5a33e45ed97b36b1cf36ef196a57f",
+        "confidence": null,
+        "isKeySkill": false
+      },
+      {
+        "skill": "Java",
+        "uuid": "d52387880e1ea22817a72d3759213819",
+        "confidence": null,
+        "isKeySkill": false
+      },
+      {
+        "skill": "Parallel Programming",
+        "uuid": "e97e107ebe64251506c26a7460a21a96",
+        "confidence": null,
+        "isKeySkill": false
+      },
+      {
+        "skill": "Linux",
+        "uuid": "edc9f0a5a5d57797bf68e37364743831",
+        "confidence": null,
+        "isKeySkill": false
+      }
+    ],
+    "flexibleWorkArrangements": [],
+    "otherRequirements": null,
+    "ssocCode": "25121",
+    "occupationId": "OCC002119",
+    "ssocVersion": "2020v3",
+    "workingHours": null,
+    "numberOfVacancies": 1,
+    "psdUrl": null,
+    "categories": [
+      {
+        "id": 41,
+        "category": "Others"
+      }
+    ],
+    "employmentTypes": [
+      {
+        "id": 8,
+        "employmentType": "Full Time"
+      }
+    ],
+    "positionLevels": [
+      {
+        "id": 7,
+        "position": "Professional"
+      }
+    ],
+    "status": {
+      "id": 102,
+      "jobStatus": "Open"
+    },
+    "ssecEqa": "70",
+    "ssecFos": "0911",
+    "postedCompany": {
+      "uen": "201815138M",
+      "description": null,
+      "name": "GRAVITON RESEARCH CAPITAL (SINGAPORE) PTE. LTD.",
+      "ssicCode": "64999",
+      "employeeCount": null,
+      "companyUrl": null,
+      "lastSyncDate": "2026-07-14T02:39:20.000Z",
+      "ssicCode2020": "64999",
+      "badges": [],
+      "_links": {
+        "self": {
+          "href": "https://api.mycareersfuture.gov.sg/v2/companies/201815138M"
+        },
+        "jobs": {
+          "href": "https://api.mycareersfuture.gov.sg/v2/companies/201815138M/jobs"
+        },
+        "addresses": {
+          "href": "https://api.mycareersfuture.gov.sg/v2/companies/201815138M/addresses"
+        },
+        "schemes": {
+          "href": "https://api.mycareersfuture.gov.sg/v2/companies/201815138M/schemes"
+        }
+      },
+      "logoFileName": null,
+      "logoUploadPath": null,
+      "responsiveEmployer": {
+        "isResponsive": false
+      }
+    },
+    "hiringCompany": null,
+    "screeningQuestions": [],
+    "address": {
+      "overseasCountry": null,
+      "foreignAddress1": null,
+      "foreignAddress2": null,
+      "block": "1",
+      "street": "RAFFLES PLACE",
+      "floor": null,
+      "unit": null,
+      "building": "ONE RAFFLES PLACE",
+      "postalCode": "048616",
+      "isOverseas": false,
+      "districts": [
+        {
+          "id": 1,
+          "location": "D01 Marina, Raffles Place, People's Park, Cecil",
+          "region": "Central",
+          "sectors": [
+            "01",
+            "02",
+            "03",
+            "04",
+            "05",
+            "06"
+          ],
+          "regionId": "Central"
+        }
+      ],
+      "lat": 1.28434954622309,
+      "lng": 103.851072545834
+    },
+    "metadata": {
+      "jobPostId": "MCF-2026-1203917",
+      "deletedAt": null,
+      "createdBy": "37728e68-2954-4514-8a33-4056aaa37c80",
+      "createdAt": "2026-07-14T02:46:02.000Z",
+      "updatedAt": "2026-07-14T02:46:01.000Z",
+      "emailRecipient": "37728e68-2954-4514-8a33-4056aaa37c80",
+      "editCount": 0,
+      "repostCount": 0,
+      "totalNumberOfView": 331,
+      "newPostingDate": "2026-07-14",
+      "originalPostingDate": "2026-07-14",
+      "expiryDate": "2026-07-28",
+      "totalNumberJobApplication": 0,
+      "isJdEnhanced": false,
+      "isPostedOnBehalf": false,
+      "isHideSalary": false,
+      "isHideCompanyAddress": false,
+      "isHideHiringEmployerName": false,
+      "isHideEmployerName": false,
+      "jobDetailsUrl": "https://www.mycareersfuture.gov.sg/job/others/software-engineer-graviton-research-capital-c50222fb764dbabbff2d5160d8d3a0ea"
+    },
+    "salary": {
+      "maximum": 17000,
+      "minimum": 16000,
+      "type": {
+        "id": 4,
+        "salaryType": "Monthly"
+      }
+    },
+    "_links": {
+      "self": {
+        "href": "https://api.mycareersfuture.gov.sg/v2/jobs/c50222fb764dbabbff2d5160d8d3a0ea"
+      },
+      "screeningQuestions": {
+        "href": "https://api.mycareersfuture.gov.sg/v2/jobs/c50222fb764dbabbff2d5160d8d3a0ea/screening-questions"
+      }
+    }
+  },
+  "agency_posted": {
+    "uuid": "9377e84fe7fc747523accda826452caf",
+    "sourceCode": "Employer Portal",
+    "title": "Software Engineer",
+    "description": "<p>Job Description & Requirements</p><p><strong>Job Responsibilities:</strong></p><ol><li><p>Responsible for overseas Android application development and providing technical support to overseas clients.</p></li><li><p>Interpret and implement technical specifications in accordance with local regulatory and compliance requirements of customers, ensuring successful delivery.</p></li></ol><p><strong>Job Requirements:</strong></p><ol><li><p>Bachelor\u2019s degree or above, with more than 5 years of Android development experience; participation in multiple end-to-end project developments.</p></li><li><p>Proficient in Java/Kotlin; solid understanding and hands-on experience with Android components and mechanisms, and in-depth knowledge of Android application build processes.</p></li><li><p>Keeps up with emerging technologies and new solutions in the financial industry, with a strong ability to explore and innovate.</p></li><li><p>Strong communication skills, with the ability to work independently and analyze and resolve problems effectively.</p></li><li><p>Experience in POS device development is a plus; strong English listening, speaking, reading, and writing skills are preferred.<br /></p><p>Jackie Hu R1102064<br />Hansing Recruitment Pte Ltd 23C1646</p></li></ol>",
+    "minimumYearsExperience": 5,
+    "shiftPattern": null,
+    "schemes": [],
+    "skills": [
+      {
+        "skill": "Writing Technical Specifications",
+        "uuid": "07299d2df92d44fb374b95a06cfae4df",
+        "confidence": null,
+        "isKeySkill": false
+      },
+      {
+        "skill": "Timely Delivery",
+        "uuid": "28a42a2183a5aa59d36a114c93f5859e",
+        "confidence": null,
+        "isKeySkill": false
+      },
+      {
+        "skill": "Regulatory Compliance",
+        "uuid": "32fd35bcce8e0664e68eaa19bbb8a9f4",
+        "confidence": null,
+        "isKeySkill": false
+      },
+      {
+        "skill": "Innovator",
+        "uuid": "515cc833a897a7e6691690482bba5490",
+        "confidence": null,
+        "isKeySkill": false
+      },
+      {
+        "skill": "Software Engineering",
+        "uuid": "607c057459161394d748df802b30f07b",
+        "confidence": null,
+        "isKeySkill": false
+      },
+      {
+        "skill": "VC",
+        "uuid": "b7128ad1d9b838be26989d1037a8c987",
+        "confidence": null,
+        "isKeySkill": false
+      },
+      {
+        "skill": "Software Design",
+        "uuid": "c1b8eee14e05c47f56588fb5e842f6e9",
+        "confidence": null,
+        "isKeySkill": false
+      },
+      {
+        "skill": "C#",
+        "uuid": "d7efa19fbe7d3972fd5adb6024223d74",
+        "confidence": null,
+        "isKeySkill": false
+      },
+      {
+        "skill": "Android",
+        "uuid": "e84e30b9390cdb64db6db2c9ab87846d",
+        "confidence": null,
+        "isKeySkill": false
+      },
+      {
+        "skill": "Able To Work Independently",
+        "uuid": "f3003179e62d8d52170ad7ba00881f2e",
+        "confidence": null,
+        "isKeySkill": false
+      },
+      {
+        "skill": "C++",
+        "uuid": "f6f87c9fdcf8b3c3f07f93f1ee8712c9",
+        "confidence": null,
+        "isKeySkill": false
+      },
+      {
+        "skill": "Android Application Development",
+        "uuid": "fe7fa921d41770ebfb2120972fc2f51c",
+        "confidence": null,
+        "isKeySkill": false
+      }
+    ],
+    "flexibleWorkArrangements": [
+      {
+        "id": 1,
+        "flexibleWorkArrangement": "Flexi-Hours"
+      }
+    ],
+    "otherRequirements": null,
+    "ssocCode": "25121",
+    "occupationId": "OCC002119",
+    "ssocVersion": "2020v3",
+    "workingHours": null,
+    "numberOfVacancies": 4,
+    "psdUrl": null,
+    "categories": [
+      {
+        "id": 21,
+        "category": "Information Technology"
+      }
+    ],
+    "employmentTypes": [
+      {
+        "id": 8,
+        "employmentType": "Full Time"
+      }
+    ],
+    "positionLevels": [
+      {
+        "id": 10,
+        "position": "Junior Executive"
+      }
+    ],
+    "status": {
+      "id": 102,
+      "jobStatus": "Open"
+    },
+    "ssecEqa": "NR",
+    "ssecFos": null,
+    "postedCompany": {
+      "uen": "202240302N",
+      "description": "<p>Hansing Recruitment Pte Ltd is a human resources solutions company in Singapore, offering services like local talent acquisition, international headhunting, and foreign worker supply. They emphasize efficiency and quality through their Recruitment Pipeline System, aiming to connect employers with suitable candidates</p>",
+      "name": "HANSING RECRUITMENT PTE. LTD.",
+      "ssicCode": null,
+      "employeeCount": 10,
+      "companyUrl": null,
+      "lastSyncDate": "2026-07-17T04:08:18.000Z",
+      "ssicCode2020": "78104",
+      "badges": [],
+      "_links": {
+        "self": {
+          "href": "https://api.mycareersfuture.gov.sg/v2/companies/202240302N"
+        },
+        "jobs": {
+          "href": "https://api.mycareersfuture.gov.sg/v2/companies/202240302N/jobs"
+        },
+        "addresses": {
+          "href": "https://api.mycareersfuture.gov.sg/v2/companies/202240302N/addresses"
+        },
+        "schemes": {
+          "href": "https://api.mycareersfuture.gov.sg/v2/companies/202240302N/schemes"
+        }
+      },
+      "logoFileName": "9034c1f7392ca5da1b53fe1e06730c5c/hansing-recruitment.jpg",
+      "logoUploadPath": "https://static.mycareersfuture.gov.sg/images/company/logos/9034c1f7392ca5da1b53fe1e06730c5c/hansing-recruitment.jpg",
+      "responsiveEmployer": {
+        "isResponsive": true
+      }
+    },
+    "hiringCompany": {
+      "uen": "202240835W",
+      "description": null,
+      "name": "NEWLAND PAYMENT TECHNOLOGY PTE. LTD.",
+      "ssicCode": null,
+      "employeeCount": null,
+      "companyUrl": null,
+      "lastSyncDate": "2026-07-17T04:57:46.000Z",
+      "ssicCode2020": "62011",
+      "badges": [],
+      "_links": {
+        "self": {
+          "href": "https://api.mycareersfuture.gov.sg/v2/companies/202240835W"
+        },
+        "jobs": {
+          "href": "https://api.mycareersfuture.gov.sg/v2/companies/202240835W/jobs"
+        },
+        "addresses": {
+          "href": "https://api.mycareersfuture.gov.sg/v2/companies/202240835W/addresses"
+        },
+        "schemes": {
+          "href": "https://api.mycareersfuture.gov.sg/v2/companies/202240835W/schemes"
+        }
+      },
+      "logoFileName": null,
+      "logoUploadPath": null
+    },
+    "screeningQuestions": [],
+    "address": {
+      "overseasCountry": null,
+      "foreignAddress1": null,
+      "foreignAddress2": null,
+      "block": "91",
+      "street": "BENCOOLEN STREET",
+      "floor": null,
+      "unit": null,
+      "building": "SUNSHINE PLAZA",
+      "postalCode": "189652",
+      "isOverseas": false,
+      "districts": [
+        {
+          "id": 7,
+          "location": "D07 Middle Road, Golden Mile",
+          "region": "Central",
+          "sectors": [
+            "18",
+            "19"
+          ],
+          "regionId": "Central"
+        }
+      ],
+      "lat": 1.30034767173014,
+      "lng": 103.851046126825
+    },
+    "metadata": {
+      "jobPostId": "MCF-2026-1213767",
+      "deletedAt": null,
+      "createdBy": "e4fc826b-bfdf-477e-9b50-5dd3b47fdd71",
+      "createdAt": "2026-07-15T04:27:41.000Z",
+      "updatedAt": "2026-07-15T04:27:42.000Z",
+      "emailRecipient": "e4fc826b-bfdf-477e-9b50-5dd3b47fdd71",
+      "editCount": 0,
+      "repostCount": 0,
+      "totalNumberOfView": 86,
+      "newPostingDate": "2026-07-15",
+      "originalPostingDate": "2026-07-15",
+      "expiryDate": "2026-07-29",
+      "totalNumberJobApplication": 0,
+      "isJdEnhanced": false,
+      "isPostedOnBehalf": true,
+      "isHideSalary": false,
+      "isHideCompanyAddress": false,
+      "isHideHiringEmployerName": false,
+      "isHideEmployerName": false,
+      "jobDetailsUrl": "https://www.mycareersfuture.gov.sg/job/information-technology/software-engineer-newland-payment-technology-9377e84fe7fc747523accda826452caf"
+    },
+    "salary": {
+      "maximum": 12000,
+      "minimum": 8000,
+      "type": {
+        "id": 4,
+        "salaryType": "Monthly"
+      }
+    },
+    "_links": {
+      "self": {
+        "href": "https://api.mycareersfuture.gov.sg/v2/jobs/9377e84fe7fc747523accda826452caf"
+      },
+      "screeningQuestions": {
+        "href": "https://api.mycareersfuture.gov.sg/v2/jobs/9377e84fe7fc747523accda826452caf/screening-questions"
+      }
+    }
+  }
+}

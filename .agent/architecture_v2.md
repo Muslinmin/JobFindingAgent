@@ -203,32 +203,47 @@ class JobSource(Protocol):
     async def fetch(self, query: str) -> list[JobCreate]: ...
 ```
 
-**Confirmed scope: MyCareersFuture + JobStreet + Careers@Gov.** All three
-endpoints were live-tested on 2026-06-10; findings below.
+**Scope: MyCareersFuture (recon done, not yet built) + Careers@Gov (built,
+held pending authorisation) + JobStreet (dropped, see below).**
+MCF/Careers@Gov endpoints were live-tested on 2026-06-10; Careers@Gov
+adapter shipped, JobStreet re-tested, and MCF recon redone on 2026-07-18.
 
-| Adapter | Method | Difficulty | Live-test result (2026-06-10) |
+| Adapter | Method | Difficulty | Live-test result |
 |---|---|---|---|
-| MyCareersFuture | httpx → public JSON API | Easy | ✅ `GET api.mycareersfuture.gov.sg/v2/jobs` returned full JSON with **no auth and no bot challenge** |
-| Careers@Gov | httpx → **Algolia search API** | Easy | ✅ Full records (title, complete JD, agency, dept) via one POST; requires Referer header (see findings) |
-| JobStreet | httpx + HTML parsing (BeautifulSoup), or internal JSON endpoints | Medium | ✅ Search pages load on a plain GET and are server-rendered, but listing data lives in markup — needs a real parser |
+| MyCareersFuture | httpx → `POST /v2/search` + `GET /v2/jobs/{uuid}` | Medium (was rated Easy — see correction below) | ✅ (2026-07-18) Confirmed live, no auth. **Correction:** search results don't include `description` — a separate detail call per hit is required for full JD text. See `scraper_layer.md` WP-S2. |
+| Careers@Gov | httpx → **Algolia search API** | Easy | ✅ (2026-07-18) `CareersGovSource` implemented and live-verified — 14 unit tests + live smoke test passing. **Held out of the active pipeline pending authorised developer access** (application in progress) — see `scraper_layer.md` WP-S1. |
+| JobStreet | ~~httpx + HTML parsing~~ | **Hard / blocked** | ❌ (2026-07-18) Re-tested: listing page now returns a Cloudflare Turnstile challenge (was plain server-rendered HTML on 2026-06-10 — the site added bot defense in the interim). Additionally, `robots.txt` now carries an explicit `User-agent: anthropic-ai` `Disallow: */job/*` block. **Do not implement.** See `scraper_layer.md` WP-S3 for full findings. |
 
 #### MCF live findings
+
+**Corrected 2026-07-18 — see `scraper_layer.md` WP-S2 for the full recon.
+The claim below that search records include full description was wrong;
+kept for history, don't build against it.**
 
 - `GET /v2/jobs` paginates the full firehose of newest listings (no filters
   needed to receive data). Keyword search on the real site goes through
   **`POST /v2/search`** with a JSON body — build the adapter against the
-  POST search endpoint, not GET query params.
-- Each record includes: full HTML `description` (the complete JD), salary
-  `minimum`/`maximum`/`salaryType`, `skills[]` from the curated government
-  taxonomy, `categories[]`, `employmentTypes[]`, **`positionLevels[]`
-  (including "Fresh/entry level" — a free entry-level filter)**, company UEN
-  + profile, district/region, posting/expiry dates, and a canonical
-  `metadata.jobDetailsUrl`.
-- This single source resolves the v1 Tavily limitations (search-result-page
-  URLs, missing JD text) outright. Expect the adapter to be ~50 lines of
-  httpx + a Pydantic response model.
+  POST search endpoint, not GET query params. Pagination (`page`/`limit`)
+  is a **query string** param, not part of the JSON body.
+- ~~Each record includes: full HTML `description` (the complete JD)~~ —
+  **wrong**. Search hits carry salary `minimum`/`maximum`/`salaryType`,
+  `skills[]`, `categories[]`, `employmentTypes[]`, `positionLevels[]`,
+  company (`postedCompany`, or `hiringCompany` when an agency posts on
+  someone's behalf), district/region, posting dates, and a canonical
+  `metadata.jobDetailsUrl` — but **not** `description`. Getting the real JD
+  text requires `GET /v2/jobs/{uuid}` per hit (confirmed live, returns HTML
+  `description`).
+- This resolves the v1 Tavily limitations (search-result-page URLs, missing
+  JD text) but not "outright" and not in ~50 lines — the description gap
+  means `fetch()` is 1 search call + up to N detail calls, an open design
+  question (inline vs. search-only vs. capped) flagged in `scraper_layer.md`.
 
 #### JobStreet live findings
+
+**Superseded 2026-07-18 — see the table above and `scraper_layer.md` WP-S3.
+The findings below are from 2026-06-10 and no longer hold: the listing route
+is now Cloudflare-gated, and `robots.txt` now disallows `anthropic-ai` from
+`*/job/*`. The adapter is blocked; do not build against these notes.**
 
 - A plain GET to `sg.jobstreet.com/{query}-jobs` returns a server-rendered
   page (no hard block at low volume): job counts, salary ranges,
