@@ -19,11 +19,11 @@ class Settings(BaseSettings):
     scrape_query: str = "software engineer Singapore"
     scrape_max_results: int = 10
 
-    # Scraper — Careers@Gov adapter (Algolia index behind jobs.careers.gov.sg)
-    careers_gov_app_id: str = ""
-    careers_gov_api_key: str = ""
-    careers_gov_index: str = "job_index"
-    careers_gov_hits_per_page: int = 20
+    # Scraper — Careers@Gov adapter (OGP open-data mirror, scraper_layer.md WP-S1)
+    careers_gov_data_url: str = (
+        "https://raw.githubusercontent.com/opengovsg/careersgovsg-jobs-data/main/data/job-listings.json"
+    )
+    careers_gov_cache_ttl_s: int = 0
 
     # Telegram — two bots, one token each, one shared authorised chat_id
     telegram_chat_bot_token: str = ""

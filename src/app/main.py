@@ -18,6 +18,7 @@ from dedup.fingerprint import fingerprint
 from scheduler.bootstrap import SchedulerDeps, register_jobs, start_scheduler, stop_scheduler
 from scoring.embedder import LiteLLMEmbedder
 from scoring.embedding_scorer import EmbeddingScorer
+from scraper.careers_gov_adapter import CareersGovSource
 from scraper.protocol import JobSource
 from telegram_bot.shared.bootstrap import build_applications, start_bots, stop_bots
 
@@ -56,12 +57,10 @@ async def lifespan(app: FastAPI):
     await start_bots(chat_app, notifications_app)
     logger.info("Both Telegram bots started")
 
-    # No adapters wired in yet. CareersGovSource is implemented and
-    # live-verified, but held out of the pipeline pending authorised
-    # developer access — see the note atop careers_gov_adapter.py and
-    # scraper_layer.md WP-S1. MCF unbuilt (WP-S2, recon in progress).
-    # JobStreet blocked (WP-S3).
-    adapters: list[JobSource] = []
+    # CareersGovSource reads OGP's public open-data mirror (scraper_layer.md
+    # WP-S1) — no credentials needed. MCF unbuilt (WP-S2, recon in
+    # progress). JobStreet blocked (WP-S3).
+    adapters: list[JobSource] = [CareersGovSource()]
     scheduler_deps = SchedulerDeps(
         service=app.state.job_service,
         scorer=app.state.scorer,
