@@ -56,9 +56,11 @@ result = await tailor(
 - Raises `TailoringError` on any failure. `.reason` is one of
   `"llm_call_failed"`, `"schema_invalid"`, `"guard_violation"`,
   `"render_failed"`; `.violations` is populated only for
-  `"guard_violation"`. Single pass, no retry (tailoring.md §5) — deciding
-  what happens next (log, notify, leave for the next batch run) is the
-  caller's call.
+  `"guard_violation"`. `"guard_violation"` is now only raised after a bounded
+  retry loop is exhausted (`MAX_GUARD_RETRIES = 2`, three attempts total) —
+  the other three reasons still fail on the first occurrence, unchanged
+  (tailoring.md §5) — deciding what happens next (log, notify, leave for the
+  next batch run) is the caller's call.
 - Does **no database I/O** of any kind. Registering the artifact and
   advancing the job's `ApplicationStatus` are the caller's responsibility.
 - The `render()` step shells out to `tectonic` via a blocking subprocess;

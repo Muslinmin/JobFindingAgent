@@ -80,6 +80,22 @@ _NUMBER_RE = re.compile(r"(?<![A-Za-z0-9])\d(?:,?\d+)*(?![A-Za-z0-9])")  # "5", 
 # make it look like a fabricated number.
 _CLAUSE_BREAK_CHARS = (",", ";", ":")
 
+_STOPWORDS: frozenset[str] = frozenset({
+    "a", "an", "the", "of", "in", "on", "at", "by", "with", "for", "to", "and",
+})
+
+
+def _backward_anchor(text: str, match_start: int) -> str | None:
+    """Walk backward word-by-word from `match_start`, skipping `_STOPWORDS`,
+    and return the first content word (lowercased). Returns `None` if the
+    numeral opens the text, or only stopwords precede it — same fallback as
+    the bare-presence check for the clause-break case."""
+    for word in reversed(_WORD_RE.findall(text[:match_start])):
+        lowered = word.lower()
+        if lowered not in _STOPWORDS:
+            return lowered
+    return None
+
 
 def _numeral_contexts(text: str) -> set[tuple[str, str | None]]:
     """(numeral, next-word) pairs — anchoring a numeral to its neighbour
@@ -90,16 +106,21 @@ def _numeral_contexts(text: str) -> set[tuple[str, str | None]]:
     But when a comma/semicolon/colon immediately follows the numeral (e.g.
     'S$20,000, ensuring...'), the next word starts a NEW CLAUSE — it is not
     what the numeral quantifies, unlike the direct-adjacency case ('5
-    engineers'). Anchoring to it there would flag a plain synonym swap of
-    the following clause ('ensuring' -> 'maintaining') as if the number's
-    own meaning had changed. In that position the numeral's context is
-    unreliable, so only its bare presence in the source is required.
+    engineers'). Anchoring to the following word there would flag a plain
+    synonym swap of that clause ('ensuring' -> 'maintaining') as if the
+    number's own meaning had changed. Instead, anchor BACKWARD to the
+    nearest preceding content word (still real context, just on the other
+    side) — a `<-` prefix keeps these pairs from colliding with forward
+    `(numeral, next_word)` pairs that happen to share the same word string.
+    Falls back to bare presence (`None`) only when no content word precedes
+    the numeral at all.
     """
     contexts: set[tuple[str, str | None]] = set()
     for match in _NUMBER_RE.finditer(text):
         rest = text[match.end():].lstrip()
         if rest and rest[0] in _CLAUSE_BREAK_CHARS:
-            contexts.add((match.group(), None))
+            anchor = _backward_anchor(text, match.start())
+            contexts.add((match.group(), f"<-{anchor}" if anchor else None))
             continue
         next_word = _WORD_RE.match(rest) or _TOKEN_RE.match(rest)
         contexts.add((match.group(), next_word.group().lower() if next_word else None))

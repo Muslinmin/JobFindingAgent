@@ -85,12 +85,20 @@ validate_guards(tailored, profile)     # ref_id integrity + skill-subset + no-ne
 render(tailored, profile)              # deterministic: identity + resolved selection → PDF
 ```
 
-**Guard violation → log and fail cleanly.** If any guard fires, the job is
-logged (loguru) and the tailoring attempt is marked failed. No retry, no
-partial render. The failure surfaces through the existing pipeline notification
-path. A guard breach means the LLM fabricated a claim; re-prompting the same
-input is unlikely to fix a structural hallucination and would burn an extra call
-for nothing.
+**Guard violation → bounded retry, then fail cleanly.** If any guard fires,
+`tailor()` re-prompts the *same* LLM call with the prior violations included
+(so the model can use judgment on them — the checker can false-positive) and
+re-runs the same, unmodified guards against the new output. This repeats up to
+a hard-coded `MAX_GUARD_RETRIES = 2`, i.e. three tailoring attempts total. Only
+guard violations retry — a malformed response (`schema_invalid`) or a broken
+LLM call (`llm_call_failed`) still fails immediately on any attempt, since
+retrying those wouldn't plausibly help. If violations persist after the retry
+budget is exhausted, the job is logged at CRITICAL (loguru) and the tailoring
+attempt is marked failed: no partial render. The failure surfaces through the
+existing pipeline notification path. The guards themselves never change
+behavior across retries — same input always produces the same verdict; only
+the tailored text being checked changes between attempts. No LLM ever
+overturns a guard verdict.
 
 **Debug artifacts.** When `save_debug_artifacts=true` (configurable, default
 off), the intermediate `.tex` file and any failed LLM outputs are written to a

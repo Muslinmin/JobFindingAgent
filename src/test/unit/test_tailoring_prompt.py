@@ -106,6 +106,24 @@ async def test_call_llm_tailor_raises_on_malformed_json():
         await call_llm_tailor("jd", _profile(), FakeLLM("not valid json {"))
 
 
+# TC-PROMPT-08 — no previous_violations -> prompt is byte-identical to the default.
+def test_assemble_prompt_without_violations_matches_default():
+    assert assemble_prompt("jd", _profile()) == assemble_prompt(
+        "jd", _profile(), previous_violations=None
+    )
+
+
+# TC-PROMPT-09 — previous_violations appends a block naming each issue.
+def test_assemble_prompt_with_violations_appends_feedback_block():
+    prompt = assemble_prompt(
+        "jd", _profile(), previous_violations=["exp_1: unauthorized skill 'leadership'"]
+    )
+    assert "exp_1: unauthorized skill 'leadership'" in prompt
+    assert "false positives" in prompt.lower()
+    # Still contains everything the base prompt has.
+    assert "jd" in prompt
+
+
 # TC-PROMPT-07 — a ref_id not present in the profile raises ValidationError.
 @pytest.mark.asyncio
 async def test_call_llm_tailor_raises_on_unresolvable_ref_id():

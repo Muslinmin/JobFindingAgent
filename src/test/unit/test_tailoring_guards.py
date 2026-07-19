@@ -80,3 +80,32 @@ def test_new_named_entity_is_flagged():
         "Worked on backend services",
     )
     assert any("AWS" in v for v in violations)
+
+
+# TC-GUARD-09 — numeral before a comma; backward anchor differs from source -> flagged.
+def test_numeral_before_comma_with_different_backward_anchor_is_flagged():
+    violations = check_no_new_specifics(
+        "Supported 5 clients, ensuring smooth delivery",
+        "Supported 5 engineers, ensuring smooth delivery",
+    )
+    assert violations != []
+
+
+# TC-GUARD-10 — numeral before a comma; backward anchor matches source -> passes
+# (the "$20,000, ensuring/maintaining" paraphrase case).
+def test_numeral_before_comma_with_matching_backward_anchor_passes():
+    violations = check_no_new_specifics(
+        "Raised S$20,000, maintaining full transparency",
+        "Raised S$20,000, ensuring full transparency",
+    )
+    assert violations == []
+
+
+# TC-GUARD-11 — numeral opens the text with a clause-break immediately after
+# (no content word precedes it) -> falls back to bare-presence check.
+def test_numeral_opening_text_before_comma_falls_back_to_bare_presence():
+    violations = check_no_new_specifics(
+        "20, a milestone figure, was reached",
+        "20, a milestone figure, was reached in Q1",
+    )
+    assert violations == []

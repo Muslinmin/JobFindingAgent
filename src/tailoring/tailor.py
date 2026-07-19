@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from typing import Final
 
 from loguru import logger
 from pydantic import BaseModel, ValidationError
@@ -26,6 +27,8 @@ from tailoring.guards import check_no_new_specifics, check_skill_subset
 from tailoring.prompt import LLMTailor, call_llm_tailor
 from tailoring.render import RenderError, _render_tex_source, render
 from tailoring.schema import TailoredSelection
+
+MAX_GUARD_RETRIES: Final[int] = 2  # hard-coded; not config-driven yet
 
 
 class ArtifactResult(BaseModel):
@@ -97,6 +100,47 @@ def _collect_guard_violations(selection: TailoredSelection, profile: Profile) ->
     return violations
 
 
+async def _tailor_with_guard_retries(
+    job_description: str, profile: Profile, llm: LLMTailor
+) -> TailoredSelection:
+    """Wraps `call_llm_tailor` + `_collect_guard_violations` in a loop bounded
+    by `MAX_GUARD_RETRIES`: three tailoring attempts total (one original plus
+    two retries). Only a guard violation triggers a retry — a malformed LLM
+    response (`schema_invalid`) or a broken LLM call (`llm_call_failed`)
+    still fails immediately on any attempt, exactly as before this loop
+    existed. The guard functions themselves are untouched: same input always
+    produces the same verdict; only the tailored text being checked changes
+    between attempts."""
+    previous_violations: list[str] | None = None
+
+    for attempt in range(MAX_GUARD_RETRIES + 1):
+        try:
+            selection = await call_llm_tailor(
+                job_description, profile, llm, previous_violations=previous_violations
+            )
+        except (json.JSONDecodeError, ValidationError) as e:
+            raise TailoringError("schema_invalid", message=str(e)) from e
+        except Exception as e:
+            # The LLM call itself blew up (rate limit, network, ...) rather
+            # than returning something we could parse or validate.
+            raise TailoringError("llm_call_failed", message=str(e)) from e
+
+        violations = _collect_guard_violations(selection, profile)
+        if not violations:
+            return selection
+
+        if attempt < MAX_GUARD_RETRIES:
+            logger.warning(
+                f"Tailoring guard violation(s) on attempt {attempt + 1}/"
+                f"{MAX_GUARD_RETRIES + 1} for jd={job_description[:80]!r}: {violations}"
+            )
+            previous_violations = violations
+            continue
+
+        logger.critical(f"Tailoring guard violation(s) for jd={job_description[:80]!r}: {violations}")
+        raise TailoringError("guard_violation", violations=violations)
+
+
 async def tailor(
     job_description: str,
     profile: Profile,
@@ -109,19 +153,7 @@ async def tailor(
     output_dir = Path(output_dir)
     template_path = Path(template_path)
 
-    try:
-        selection = await call_llm_tailor(job_description, profile, llm)
-    except (json.JSONDecodeError, ValidationError) as e:
-        raise TailoringError("schema_invalid", message=str(e)) from e
-    except Exception as e:
-        # The LLM call itself blew up (rate limit, network, ...) rather
-        # than returning something we could parse or validate.
-        raise TailoringError("llm_call_failed", message=str(e)) from e
-
-    violations = _collect_guard_violations(selection, profile)
-    if violations:
-        logger.critical(f"Tailoring guard violation(s) for jd={job_description[:80]!r}: {violations}")
-        raise TailoringError("guard_violation", violations=violations)
+    selection = await _tailor_with_guard_retries(job_description, profile, llm)
 
     if save_debug_artifacts:
         tex_source = _render_tex_source(selection, profile, template_path=template_path)
