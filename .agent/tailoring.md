@@ -74,6 +74,12 @@ number is flagged.
 > prompt-enforced plus a light source-diff — not a formal proof. Treat this tier
 > as strong, not perfect.
 
+A numeral immediately followed by a clause-break character (`,` `;` `:`) is
+anchored to its nearest preceding content word (skipping articles/prepositions)
+rather than having its context dropped — this catches the same digits being
+silently re-attributed across a comma (`"$20,000, a total of..."` becoming
+`"$20,000, a grant of..."`), not just a bare number reused verbatim.
+
 ---
 
 ## 5. The tailoring call (single pass)
@@ -134,10 +140,10 @@ is what the implementation *guarantees*, independent of how it's called:
 
 1. Every `ref_id` in a `TailoredSelection` resolves to a real `Profile` item.
 2. Skill terms detected in any tailored item's text ⊆ that item's `demonstrated_skills`.
-3. No numeral or named entity appears in tailored text that is absent from the source item (including entities introduced only via the `**bold**` marker — it carries no truthfulness exemption).
+3. No numeral or named entity appears in tailored text that is absent from the source item (including entities introduced only via the `**bold**` marker — it carries no truthfulness exemption). A numeral before a clause-break comma is checked against its backward-anchored source context, not just its bare digits.
 4. Identity fields in the render model are byte-identical to `profile.json`.
 5. LLM output validates against the `TailoredSelection` schema, checked against the `Profile` in the same pass (a dangling `ref_id` is a schema failure, not a guard failure).
-6. A guard violation logs at CRITICAL and fails cleanly — no partial render, no retry.
+6. A guard violation retries the same LLM call, with the prior violations fed back into the prompt, up to `MAX_GUARD_RETRIES` (2) times before giving up. Only once that budget is exhausted does it log at CRITICAL and fail cleanly — no partial render. Schema and LLM-call failures are never retried.
 
 The tailoring layer performs no database I/O; two callers (a daily batch job
 and an on-demand agent tool) are expected to call the same `tailor()`, but

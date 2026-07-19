@@ -1,10 +1,12 @@
 # Tailoring Layer — Status & Usage
 
 > Companion to `tailoring.md` (design decisions) and `architecture_v2.md`
-> §5/§7. Implementation is complete (all of WP0–WP5). This file used to be
-> the build plan (work packages + a `TC-*` test-case catalog); that plan has
-> been executed, so this is now a usage reference instead. The original
-> catalog is still there in git history if it's ever needed as a spec again.
+> §5/§7. Implementation is complete (all of WP0–WP5, plus a later delta
+> adding the numeral backward-anchor and the bounded guard-retry loop).
+> This file used to be the build plan (work packages + a `TC-*` test-case
+> catalog); those plans have been executed, so this is now a usage
+> reference instead. The original catalogs are still there in git history
+> if ever needed as a spec again.
 
 ---
 
@@ -15,10 +17,10 @@
 | File | Responsibility |
 |---|---|
 | `schema.py` | `TailoredItem`, `TailoredSelection` — the LLM's output shape. Ref-id / skill-order / order-consistency are validated against a `Profile` via `TailoredSelection.model_validate(data, context={"profile": profile})`. |
-| `guards.py` | `check_skill_subset`, `check_no_new_specifics` — the two deterministic truthfulness guards (tailoring.md §3–§4). |
-| `prompt.py` | `assemble_prompt`, `call_llm_tailor`, the `LLMTailor` protocol (`async def complete(prompt: str) -> str`). |
+| `guards.py` | `check_skill_subset`, `check_no_new_specifics` — the two deterministic truthfulness guards (tailoring.md §3–§4). A numeral followed by a clause-break character (`,` `;` `:`) anchors backward to its nearest preceding content word instead of dropping context. |
+| `prompt.py` | `assemble_prompt`, `call_llm_tailor`, the `LLMTailor` protocol (`async def complete(prompt: str) -> str`). Both take an optional `previous_violations` used to re-prompt after a guard failure — a no-op, byte-identical prompt when omitted. |
 | `render.py` | `latex_escape`, `build_render_model`, `render` — Jinja2 templating → `tectonic` → PDF. |
-| `tailor.py` | `tailor()`, the layer's single public entry point; `TailoringError`; `ArtifactResult`; `save_debug_artifact`. |
+| `tailor.py` | `tailor()`, the layer's single public entry point; `TailoringError`; `ArtifactResult`; `save_debug_artifact`; `MAX_GUARD_RETRIES` (hard-coded at 2) and the bounded guard-retry loop that wraps every LLM call + guard check. |
 | `prompts/tailoring.md` | Domain-knowledge content (`resume-tailor` / `resume-ats-optimizer` / `resume-section-builder`) injected into the LLM prompt. |
 | `templates/cv.tex.jinja` | The LaTeX template. Owns all LaTeX syntax — the LLM never emits any. |
 
