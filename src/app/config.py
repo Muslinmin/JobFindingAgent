@@ -84,6 +84,15 @@ class Settings(BaseSettings):
     llm_retry_wait_s: int = 5
     llm_max_retries: int = 3
 
+    # Agent — reasoning budget sent with every tool-calling request.
+    # "none" is what makes function tools work at all on the gpt-5.6 family
+    # via /v1/chat/completions (agent_v2.md §6 invariant 7). It is a setting
+    # and not a literal because litellm's drop_params only removes parameters
+    # a provider lacks entirely, not values it rejects: a reasoning model
+    # whose enum starts at "minimal" would 400 on "none". Empty string omits
+    # the parameter altogether.
+    llm_reasoning_effort: str = "none"
+
     # Agent — session policy (agent_v2.md §6). The idle threshold lives here,
     # in the agent's config, never in the conversation store: the store
     # reports and creates sessions, the agent alone decides continue-vs-new.

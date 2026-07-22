@@ -136,8 +136,8 @@ the deadline belongs to the request, not to the reasoning.
 
 `session_idle_minutes` (30), `conversation_db_path`, `transcript_base_dir`,
 `agent_turn_deadline_s` (180), `llm_call_timeout_s` (60), `llm_max_retries`
-(3), `llm_retry_wait_s` (5), `profile_path`, `search_queries_path`,
-`score_threshold`. The ladder invariant `llm_call < agent_turn <
+(3), `llm_retry_wait_s` (5), `llm_reasoning_effort` (`"none"`, §6 inv. 7),
+`profile_path`, `search_queries_path`, `score_threshold`. The ladder invariant `llm_call < agent_turn <
 backend_read` is asserted in `test_config.py`, not merely assumed.
 
 ---
@@ -218,6 +218,17 @@ call — that is how the loop asks what to do next — so clearing it there
 would mean two consecutive tool failures could never accumulate and the
 condition would never fire.
 
+**A crashed tool rewinds the round.** The exception never becomes a tool
+message (invariant 2), which would otherwise strand the assistant
+`tool_calls` that asked for it and make the next request a 400 (invariant
+9) — so the assistant message goes too, and the model sees the
+conversation as it stood before it acted. It therefore has no way to know
+the call failed and will normally propose it again; that repeat is caught
+ahead of the drift guard and returns the *error* reply rather than the
+no-progress one, because "something broke" and "tell me which job you
+meant" are not the same thing to a user. This is the live path today: the
+four unwired tools in §7 all raise.
+
 ### Context composition
 
 Three tiers: the **static spine** (`system.md`, identical every turn, read
@@ -264,9 +275,20 @@ marker: once a new session starts, the old turns are out of loaded history.
    `async def`; backoff is `await asyncio.sleep`, never `time.sleep`. This
    app runs the API, both bots, and the scheduler on one event loop.
 7. Reasoning models reject function tools on `/v1/chat/completions`, so
-   `AgentLLMClient` sends `reasoning_effort="none"` with `drop_params=True`
-   (a no-op for providers without that knob). Live-verified against
-   `gpt-5.6-luna`, which 400s otherwise.
+   `AgentLLMClient` sends `reasoning_effort=settings.llm_reasoning_effort`
+   (`"none"`) with `drop_params=True` (a no-op for providers without that
+   knob). Live-verified against `gpt-5.6-luna`, which 400s otherwise;
+   BerriAI/litellm#33221. It is a **setting, not a literal**, because
+   `drop_params` removes unsupported parameter *names* and not unsupported
+   *values* — a reasoning model whose enum starts at `"minimal"` still 400s
+   on `"none"`, and `LLM_REASONING_EFFORT=""` omits the parameter.
+8. Requests carry `parallel_tool_calls=False`, and it is sent **only when
+   `tools` is non-empty** (OpenAI rejects it on a request with no tools).
+   The provider default is `true`; one call per iteration is what the loop's
+   drift guard and its rewind-on-crash rule both assume.
+9. Every `tool_calls` entry the loop appends is answered by a matching
+   `tool` message before the next request, or the whole round is removed.
+   There is no third option: an unanswered `tool_call_id` is a 400.
 
 ---
 

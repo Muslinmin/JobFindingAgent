@@ -229,6 +229,35 @@ async def test_exception_never_becomes_a_tool_result(agent, llm, dispatcher):
     assert [m for m in messages if m.get("role") == "tool"] == []
 
 
+async def test_a_crashed_tool_leaves_no_unanswered_tool_calls(agent, llm, dispatcher):
+    """A `tool_calls` entry with no answering `tool` message is a request
+    the provider rejects outright, so the crashed round is rewound whole —
+    dropping only the tool result would strand the call that asked for it."""
+    llm.chat.side_effect = [
+        _response(tool_calls=[_call("find_jobs", {"job_title": "a"})]),
+        _response(content="recovered"),
+    ]
+    dispatcher.dispatch.side_effect = [RuntimeError("boom"), {"ok": True}]
+
+    await agent.run("s1", "x")
+
+    messages = llm.chat.call_args_list[1].args[0]
+    assert [m for m in messages if m.get("tool_calls")] == []
+
+
+async def test_re_proposing_the_crashed_call_reports_a_crash_not_a_stall(agent, llm, dispatcher):
+    """The model can't see the exception, so it proposes the same call
+    again. That is the end of the turn, and the user should be told
+    something broke — not asked to clarify which job they meant."""
+    llm.chat.side_effect = [
+        _response(tool_calls=[_call("tailor_resume", {"job_id": 1})]),
+        _response(tool_calls=[_call("tailor_resume", {"job_id": 1})]),
+    ]
+    dispatcher.dispatch.side_effect = RuntimeError("not wired")
+
+    assert "Something went wrong" in await agent.run("s1", "x")
+
+
 async def test_two_consecutive_llm_exceptions_abort_the_turn(agent, llm):
     llm.chat.side_effect = [RuntimeError("429"), RuntimeError("429")]
     assert "Something went wrong" in await agent.run("s1", "x")

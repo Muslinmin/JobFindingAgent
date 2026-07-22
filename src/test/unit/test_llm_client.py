@@ -78,6 +78,47 @@ async def test_agent_client_passes_tools_through_to_acompletion():
     assert kwargs["messages"] == [{"role": "user", "content": "hi"}]
 
 
+async def test_agent_client_sends_the_tool_calling_contract():
+    """`reasoning_effort` is what makes function tools work at all on the
+    gpt-5.6 family via /v1/chat/completions; `parallel_tool_calls=False` is
+    what makes the loop's one-call-at-a-time design a property of the
+    request. `drop_params` keeps both no-ops on providers without the knob."""
+    with patch(
+        "agent.llm_client.acompletion", new=AsyncMock(return_value=_mock_response())
+    ) as mock_acompletion:
+        await _agent_client().chat([], TOOLS)
+
+    kwargs = mock_acompletion.call_args.kwargs
+    assert kwargs["reasoning_effort"] == settings.llm_reasoning_effort
+    assert kwargs["parallel_tool_calls"] is False
+    assert kwargs["drop_params"] is True
+
+
+async def test_agent_client_omits_tool_params_when_there_are_no_tools():
+    """OpenAI rejects `parallel_tool_calls` on a request carrying no
+    `tools`, so it cannot be passed unconditionally."""
+    with patch(
+        "agent.llm_client.acompletion", new=AsyncMock(return_value=_mock_response())
+    ) as mock_acompletion:
+        await _agent_client().chat([{"role": "user", "content": "hi"}])
+
+    kwargs = mock_acompletion.call_args.kwargs
+    assert "parallel_tool_calls" not in kwargs
+    assert "tools" not in kwargs
+
+
+async def test_agent_client_omits_reasoning_effort_when_unset(monkeypatch):
+    """A reasoning model whose enum has no 'none' 400s on the value, and
+    drop_params only removes unsupported *names* — hence the escape hatch."""
+    monkeypatch.setattr(settings, "llm_reasoning_effort", "")
+    with patch(
+        "agent.llm_client.acompletion", new=AsyncMock(return_value=_mock_response())
+    ) as mock_acompletion:
+        await _agent_client().chat([], TOOLS)
+
+    assert "reasoning_effort" not in mock_acompletion.call_args.kwargs
+
+
 async def test_agent_client_returns_the_raw_response():
     """The loop needs both the text and any tool_calls, and has to append the
     assistant message back verbatim — so nothing is parsed out here."""

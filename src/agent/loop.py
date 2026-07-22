@@ -22,7 +22,9 @@ The distinction that makes the loop work: an *expected* `{ok:false}` result
 is fed straight back as a tool message and the loop continues, because the
 model is supposed to read it and change course (disambiguate, relay an
 illegal transition, offer an alternative). An unexpected exception is not
-data and never becomes a tool result.
+data and never becomes a tool result — the conversation is rewound past the
+assistant message that asked for it instead, because a `tool_calls` entry
+with no answering `tool` message is a request the provider rejects.
 """
 
 from __future__ import annotations
@@ -105,6 +107,7 @@ class Agent:
 
     async def _iterate(self, messages: list[dict]) -> str:
         last_call: tuple[str, str] | None = None
+        crashed_call: tuple[str, str] | None = None
         consecutive_exceptions = 0
 
         for iteration in range(MAX_ITERATIONS):
@@ -133,11 +136,27 @@ class Agent:
             if not calls:
                 return _text(message) or _CAP_REPLY
 
+            # Where the conversation stood before this round of tool calls.
+            # An assistant message carrying `tool_calls` is only a legal
+            # prefix once every one of those ids has a matching `tool`
+            # message, so if we bail mid-round we rewind to here rather than
+            # sending a request the provider would reject outright.
+            round_start = len(messages)
             messages.append(_assistant_message(message, calls))
 
             for call in calls:
                 name = call.function.name
                 raw_args = call.function.arguments
+
+                # The model re-proposing the call that just crashed. It has
+                # no way to know it crashed — an exception is never fed back
+                # as a tool result — so it will keep proposing it, and this
+                # is the honest end of that road. Checked before the drift
+                # guard so a crash reports as a crash and not as "I got
+                # stuck repeating the same lookup".
+                if crashed_call == (name, raw_args):
+                    logger.warning(f"agent loop: tool '{name}' re-proposed after crashing")
+                    return _ERROR_REPLY
 
                 # Stop condition 3 — no progress. Compared on the RAW
                 # argument string so it can be checked before parsing, and
@@ -151,15 +170,21 @@ class Agent:
                 try:
                     result = await self._dispatcher.dispatch(name, _parse_args(raw_args))
                     consecutive_exceptions = 0
+                    crashed_call = None
                 except Exception:
                     consecutive_exceptions += 1
+                    crashed_call = (name, raw_args)
                     logger.exception(
                         f"agent loop: tool '{name}' raised "
                         f"({consecutive_exceptions}/{MAX_CONSECUTIVE_EXCEPTIONS})"
                     )
                     # Stop condition 4 — unexpected failures. Note this
                     # never becomes a tool message: an exception is not a
-                    # result the model gets to narrate.
+                    # result the model gets to narrate. Rewinding is what
+                    # keeps that true *and* legal — dropping just the tool
+                    # message would strand the assistant `tool_calls` that
+                    # asked for it, and the next request would 400.
+                    del messages[round_start:]
                     if consecutive_exceptions >= MAX_CONSECUTIVE_EXCEPTIONS:
                         return _ERROR_REPLY
                     break

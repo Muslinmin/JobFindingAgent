@@ -53,10 +53,11 @@ class TaskLLMClient:
 class AgentLLMClient:
     """Tool-calling, retrying LLM access for the interactive ReAct loop.
 
-    Returns the provider's raw `message` object rather than a parsed
-    result: the loop needs both the text and any `tool_calls`, and it has
-    to append the assistant message back onto the conversation verbatim for
-    the next iteration to make sense to the provider.
+    Returns the provider's raw *response* object — the loop reads
+    `response.choices[0].message` itself. Nothing is parsed out here: the
+    loop needs both the text and any `tool_calls`, and it has to append the
+    assistant message back onto the conversation verbatim for the next
+    iteration to make sense to the provider.
 
     Retries use a *fixed* wait, not exponential backoff. The turn deadline
     is the real budget, and a fixed wait makes the worst case something you
@@ -86,27 +87,12 @@ class AgentLLMClient:
         that has already given up.
         """
         last_error: Exception | None = None
+        params = self._request_params(messages, tools)
 
         for attempt in range(1, self.max_retries + 1):
             try:
                 return await asyncio.wait_for(
-                    acompletion(
-                        model=self.model,
-                        messages=messages,
-                        tools=tools or None,
-                        api_key=settings.model_api_key or None,
-                        # Reasoning models reject function tools on
-                        # /v1/chat/completions unless reasoning_effort is
-                        # 'none' (live-verified against gpt-5.6-luna, which
-                        # 400s otherwise). Extended per-call reasoning is
-                        # also not what this loop wants: it reasons ACROSS
-                        # iterations, one tool call at a time. `drop_params`
-                        # makes the flag a no-op on providers that have no
-                        # such knob — Gemini raises UnsupportedParamsError
-                        # if it is passed through to them.
-                        reasoning_effort="none",
-                        drop_params=True,
-                    ),
+                    acompletion(**params),
                     timeout=self.timeout_s,
                 )
             except asyncio.CancelledError:
@@ -121,3 +107,51 @@ class AgentLLMClient:
                     await asyncio.sleep(self.retry_wait_s)
 
         raise LLMCallFailed(f"all {self.max_retries} attempts failed") from last_error
+
+    def _request_params(self, messages: list[dict], tools: list[dict] | None) -> dict:
+        """The `/v1/chat/completions` tool-calling contract, built once per
+        `chat()` so every retry sends a byte-identical request.
+
+        The tool-only parameters are omitted entirely when `tools` is empty:
+        OpenAI rejects `parallel_tool_calls` on a request that carries no
+        `tools`, so it cannot simply be passed unconditionally.
+        """
+        params: dict = {
+            "model": self.model,
+            "messages": messages,
+            "api_key": settings.model_api_key or None,
+            # Drops parameters a provider has no knob for — Gemini raises
+            # UnsupportedParamsError on `reasoning_effort` otherwise. Note
+            # it drops unsupported *names*, never unsupported *values*: a
+            # model that has the knob but rejects our value still 400s,
+            # which is why the value is a setting rather than a literal.
+            "drop_params": True,
+        }
+
+        if settings.llm_reasoning_effort:
+            # Reasoning models reject function tools on
+            # /v1/chat/completions unless reasoning_effort is 'none'
+            # (live-verified against gpt-5.6-luna, which 400s otherwise;
+            # BerriAI/litellm#33221). Extended per-call reasoning is also
+            # not what this loop wants: it reasons ACROSS iterations, one
+            # tool call at a time. Set LLM_REASONING_EFFORT="" to omit the
+            # parameter for a model whose enum has no 'none'.
+            params["reasoning_effort"] = settings.llm_reasoning_effort
+
+        if tools:
+            params["tools"] = tools
+            # `tool_choice` is left at the provider default ("auto"): the
+            # loop's whole premise is that the model chooses between
+            # answering and acting on each iteration.
+            #
+            # Parallel calls are switched OFF so "one tool call at a time"
+            # is a property of the request rather than a hope. The default
+            # is true, and a batch would break two of the loop's rules at
+            # once: its drift guard compares consecutive calls, so a model
+            # that emits the same call twice inside one batch would trip
+            # "no progress" on a turn that had made some; and a mid-batch
+            # tool crash leaves sibling tool_calls unanswerable, which the
+            # next request rejects outright.
+            params["parallel_tool_calls"] = False
+
+        return params
