@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
-from typing import Protocol
 
 from loguru import logger
 from telegram import InlineKeyboardButton
@@ -32,15 +31,15 @@ from telegram import InlineKeyboardButton
 from app.config import Settings
 from app.models.job import Job
 from app.services.service import JobService
+from drafting.followup import DraftLLM, assemble_followup_prompt, draft_followup
 from telegram_bot.notifications.client import NotificationTelegramClient
 
-
-class DraftLLM(Protocol):
-    """The narrow contract this job needs from an LLM client — text in,
-    text out. `TaskLLMClient.complete` already satisfies this structurally
-    (same pattern as tailoring.prompt.LLMTailor)."""
-
-    async def complete(self, prompt: str) -> str: ...
+# `DraftLLM` and `assemble_followup_prompt` are re-exported rather than
+# defined here: the drafting itself moved to `drafting/followup.py` when the
+# agent's `draft_followup` tool needed it (agent_v2.md §7), and the two
+# callers must not drift on the prompt. What stayed is the *nudge* — bucket
+# selection, the push, and the `mark_follow_up_nudged` stamp.
+__all__ = ["DraftLLM", "assemble_followup_prompt", "run_follow_up"]
 
 
 def _cutoff(days: int) -> str:
@@ -49,28 +48,17 @@ def _cutoff(days: int) -> str:
     return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
 
 
-def _assemble_followup_prompt(role: str, company: str, applied_date: str) -> str:
-    """Builds the one-shot drafting prompt from role/company/applied_date.
-    No profile, no JD — deliberately minimal context for a short nudge
-    email."""
-    return (
-        "Draft a short, polite follow-up email to send after applying for a job "
-        "and not hearing back yet. Keep it under 100 words, professional, and "
-        "copy-paste ready — no placeholders.\n\n"
-        f"Role: {role}\n"
-        f"Company: {company}\n"
-        f"Applied on: {applied_date}\n"
-    )
-
-
 async def _draft_and_push(
     job: Job, llm: DraftLLM, telegram: NotificationTelegramClient
 ) -> None:
-    """`llm.complete(_assemble_followup_prompt(...))` -> drafted text, then
+    """`draft_followup(...)` -> drafted text, then
     `telegram.send_message_with_keyboard(text, [[Sent it], [Skip]])`. Raises
-    on failure; the caller in `run_follow_up` catches and logs per-record."""
-    prompt = _assemble_followup_prompt(job.role, job.company, job.status_changed_at)
-    draft = await llm.complete(prompt)
+    on failure; the caller in `run_follow_up` catches and logs per-record.
+
+    No `note`: a scheduled nudge has nobody to ask. That parameter only
+    ever arrives from the agent path.
+    """
+    draft = await draft_followup(job.role, job.company, job.status_changed_at, llm)
     text = f"Follow-up due — {job.role} at {job.company}\n\n{draft}"
 
     # callback_data contract: telegram_bot/notifications/handlers.py's

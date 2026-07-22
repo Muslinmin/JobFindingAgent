@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock
 from app.models.enums import ApplicationStatus
 from app.models.job import Job
 from scheduler.jobs.follow_up import (
-    _assemble_followup_prompt,
+    assemble_followup_prompt as _assemble_followup_prompt,
     _cutoff,
     _draft_and_push,
     run_follow_up,

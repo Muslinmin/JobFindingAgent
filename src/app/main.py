@@ -111,6 +111,13 @@ async def lifespan(app: FastAPI):
                 settings=settings,
                 profile_path=Path(settings.profile_path),
                 queries_path=Path(settings.search_queries_path),
+                # The same three the scheduler got. `adapters` is the same
+                # list object on purpose: CareersGovSource caches the whole
+                # corpus per instance, and a second instance would fetch it
+                # again for no reason.
+                adapters=adapters,
+                template_path=Path(settings.tailoring_template_path),
+                output_dir=Path(settings.tailoring_output_dir),
             )
         ),
         context=app.state.conversation_context,

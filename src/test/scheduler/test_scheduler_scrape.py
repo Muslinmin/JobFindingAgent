@@ -1,10 +1,13 @@
 """WP-S2 — scrape + inline score job tests.
 
-Mirrors scheduling_v2.md's WP-S2 test catalog. `_fan_out` is exercised
-directly with queries passed in; `run_scrape`'s file-loading wrapper is
-covered separately at the end. `load_profile` is patched in every test that
-reaches `_ingest_and_score`, so no real `profile.json` is needed on disk —
-the mock scorer never inspects the profile's content anyway.
+Mirrors scheduling_v2.md's WP-S2 test catalog. The pipeline these
+`test_pipeline_*` / `test_score_*` cases exercise now lives in
+`app/services/discovery.py` (it moved out of this job when `search_jobs`
+needed the same behaviour — agent_v2.md §7), so they import `fan_out` from
+there under its old local name and patch `discovery`'s `load_profile` and
+`logger`. They stay in this file because the daily scrape is still the
+behaviour being specified; `run_scrape`'s file-loading wrapper, which is
+all that remains job-private, is covered separately at the end.
 """
 
 import json
@@ -15,7 +18,8 @@ import pytest
 
 from app.models.enums import ApplicationStatus
 from app.models.job import Job, JobCreate
-from scheduler.jobs.scrape import _fan_out, _load_queries, run_scrape
+from app.services.discovery import fan_out as _fan_out
+from scheduler.jobs.scrape import _load_queries, run_scrape
 
 
 def _discovered_job(job_id: int = 1, description: str = "JD text") -> Job:
@@ -81,7 +85,7 @@ PROFILE_PATH = Path("profile.json")
 
 
 def _patch_load_profile():
-    return patch("scheduler.jobs.scrape.load_profile", return_value=MagicMock())
+    return patch("app.services.discovery.load_profile", return_value=MagicMock())
 
 
 # ── fan-out ───────────────────────────────────────────────────────────────────
@@ -120,7 +124,7 @@ async def test_pipeline_one_adapter_failure_does_not_abort_others():
     service = _mock_service()
     scorer = _mock_scorer()
 
-    with _patch_load_profile(), patch("scheduler.jobs.scrape.logger") as mock_logger:
+    with _patch_load_profile(), patch("app.services.discovery.logger") as mock_logger:
         await _fan_out(["engineer"], [adapter_a, adapter_b], service, scorer, PROFILE_PATH, _Settings(), delay_s=0)
 
     assert service.ingest_job.call_count == 2
@@ -133,7 +137,7 @@ async def test_pipeline_ingest_failure_does_not_abort_pipeline():
     service = _mock_service(ingest_returns=[Exception("db down"), _discovered_job(2), _discovered_job(3)])
     scorer = _mock_scorer()
 
-    with _patch_load_profile(), patch("scheduler.jobs.scrape.logger") as mock_logger:
+    with _patch_load_profile(), patch("app.services.discovery.logger") as mock_logger:
         await _fan_out(["engineer"], [adapter], service, scorer, PROFILE_PATH, _Settings(), delay_s=0)
 
     assert service.ingest_job.call_count == 3
@@ -145,7 +149,7 @@ async def test_pipeline_delay_between_requests():
     service = _mock_service()
     scorer = _mock_scorer()
 
-    with _patch_load_profile(), patch("scheduler.jobs.scrape.asyncio.sleep", new_callable=AsyncMock) as sleep:
+    with _patch_load_profile(), patch("app.services.discovery.asyncio.sleep", new_callable=AsyncMock) as sleep:
         await _fan_out(["engineer", "analyst"], [adapter], service, scorer, PROFILE_PATH, _Settings(), delay_s=2.5)
 
     assert sleep.call_count == 2
@@ -157,7 +161,7 @@ async def test_pipeline_empty_adapter_result():
     service = _mock_service()
     scorer = _mock_scorer()
 
-    with _patch_load_profile(), patch("scheduler.jobs.scrape.logger") as mock_logger:
+    with _patch_load_profile(), patch("app.services.discovery.logger") as mock_logger:
         await _fan_out(["engineer"], [adapter], service, scorer, PROFILE_PATH, _Settings(), delay_s=0)
 
     service.ingest_job.assert_not_called()
@@ -223,7 +227,7 @@ async def test_scoring_failure_leaves_job_discovered():
     scorer = AsyncMock()
     scorer.score.side_effect = Exception("embeddings API down")
 
-    with _patch_load_profile(), patch("scheduler.jobs.scrape.logger") as mock_logger:
+    with _patch_load_profile(), patch("app.services.discovery.logger") as mock_logger:
         await _fan_out(["engineer"], [adapter], service, scorer, PROFILE_PATH, _Settings(), delay_s=0)
 
     service.transition_status.assert_not_called()
@@ -235,8 +239,8 @@ async def test_missing_profile_ingests_without_scoring():
     service = _mock_service(ingest_returns=[_discovered_job(1)])
     scorer = _mock_scorer()
 
-    with patch("scheduler.jobs.scrape.load_profile", side_effect=FileNotFoundError()), \
-         patch("scheduler.jobs.scrape.logger") as mock_logger:
+    with patch("app.services.discovery.load_profile", side_effect=FileNotFoundError()), \
+         patch("app.services.discovery.logger") as mock_logger:
         await _fan_out(["engineer"], [adapter], service, scorer, PROFILE_PATH, _Settings(), delay_s=0)
 
     service.ingest_job.assert_called_once()

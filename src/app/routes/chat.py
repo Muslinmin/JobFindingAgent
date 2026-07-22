@@ -23,9 +23,17 @@ The route owns three things the loop deliberately does not:
 * **The turn deadline.** A breach returns a `200` with a best-effort reply,
   never a `500` and never a hung connection — the bot on the other end is a
   Telegram user staring at a chat window (concurrencyFor_agentV2.md §3).
+* **Reading file bytes.** A handler that produced an artifact hands the
+  turn a *path*; this is where it becomes base64 in the response body. The
+  agent holds no Telegram client, so every file it makes has to ride out in
+  this single response (architecture_v2.md, "POST /chat transport") — and
+  keeping the read here is what stops megabytes of PDF from travelling
+  through the reasoning loop.
 """
 
 import asyncio
+import base64
+from pathlib import Path
 
 from fastapi import APIRouter, Request
 from loguru import logger
@@ -71,6 +79,29 @@ def _lock_for(request: Request, session_id: str) -> asyncio.Lock:
     return locks[session_id]
 
 
+def _encode(record: dict) -> Attachment | None:
+    """Read the produced file and base64 it into the response.
+
+    A missing or unreadable file is dropped with a warning rather than
+    failing the request: the reply text is already composed and is the more
+    valuable half, and the artifact row still records where the file was
+    meant to be. Losing the attachment degrades the turn; raising here
+    would lose the answer too.
+    """
+    path = Path(record["path"])
+    try:
+        content = path.read_bytes()
+    except OSError:
+        logger.warning(f"chat: could not read attachment at {path}; replying without it")
+        return None
+    return Attachment(
+        kind=record["kind"],
+        filename=record["filename"],
+        mime_type=record["mime_type"],
+        content_b64=base64.b64encode(content).decode(),
+    )
+
+
 @router.post("", response_model=ChatResponse)
 async def chat(payload: ChatRequest, request: Request) -> ChatResponse:
     agent = request.app.state.agent
@@ -82,7 +113,7 @@ async def chat(payload: ChatRequest, request: Request) -> ChatResponse:
 
     async with turn_lock:
         try:
-            reply = await asyncio.wait_for(
+            result = await asyncio.wait_for(
                 agent.run(session.id, payload.message),
                 timeout=settings.agent_turn_deadline_s,
             )
@@ -94,6 +125,7 @@ async def chat(payload: ChatRequest, request: Request) -> ChatResponse:
                 f"chat: turn exceeded {settings.agent_turn_deadline_s}s deadline "
                 f"on session {session.id}"
             )
-            reply = _DEADLINE_REPLY
+            return ChatResponse(reply=_DEADLINE_REPLY)
 
-    return ChatResponse(reply=reply)
+    encoded = [_encode(record) for record in result.attachments]
+    return ChatResponse(reply=result.reply, attachments=[a for a in encoded if a is not None])

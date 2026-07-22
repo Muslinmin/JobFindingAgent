@@ -94,6 +94,9 @@ def agent(llm, job_service, context, profile_path, tmp_path):
         settings=Settings(score_threshold=5000),
         profile_path=profile_path,
         queries_path=tmp_path / "queries.json",
+        adapters=[],
+        template_path=tmp_path / "cv.tex.jinja",
+        output_dir=tmp_path / "artifacts",
     )
     return Agent(
         llm=llm, dispatcher=ToolDispatcher(deps), context=context, profile_path=profile_path
@@ -115,7 +118,7 @@ async def test_rr1_single_match_resolves_then_transitions(agent, llm, job_servic
         _response(content="Marked PUB Data Analyst as interviewing."),
     ]
 
-    reply = await agent.run("s1", "got an interview with PUB")
+    reply = (await agent.run("s1", "got an interview with PUB")).reply
 
     job_service.transition_status.assert_called_once()
     assert job_service.transition_status.call_args.args[0] == 42
@@ -149,7 +152,7 @@ async def test_rr2_no_match_produces_no_mutation(agent, llm, job_service):
         _response(content="I don't have a PUB job on file. Want me to search for it?"),
     ]
 
-    reply = await agent.run("s1", "got an interview with PUB")
+    reply = (await agent.run("s1", "got an interview with PUB")).reply
 
     job_service.transition_status.assert_not_called()
     assert "PUB" in reply
@@ -277,7 +280,7 @@ async def test_rr7_deleted_job_returns_not_found_and_the_loop_re_enters(agent, l
         _response(content="That job no longer exists."),
     ]
 
-    reply = await agent.run("s1", "got an offer")
+    reply = (await agent.run("s1", "got an offer")).reply
 
     messages = llm.chat.call_args_list[1].args[0]
     result = json.loads([m for m in messages if m.get("role") == "tool"][0]["content"])
@@ -314,7 +317,7 @@ async def test_rr8_illegal_transition_verdict_reaches_the_model_intact(agent, ll
         _response(content="That job is marked rejected, so I can't move it to offer. Did something change?"),
     ]
 
-    reply = await agent.run("s1", "got an offer from PUB")
+    reply = (await agent.run("s1", "got an offer from PUB")).reply
 
     messages = llm.chat.call_args_list[1].args[0]
     result = json.loads([m for m in messages if m.get("role") == "tool"][0]["content"])

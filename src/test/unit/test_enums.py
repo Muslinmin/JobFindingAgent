@@ -98,3 +98,24 @@ def test_error_message_names_both_states():
         transition(ApplicationStatus.REJECTED, ApplicationStatus.OFFER)
     message = str(exc.value)
     assert "rejected" in message and "offer" in message
+
+
+def test_a_user_holding_the_resume_can_apply_in_one_move():
+    """PENDING_APPROVAL means "the system made a CV and is waiting for a
+    human" — it has duration only in the scheduler's push flow, where the
+    human is asleep. A user who asked for the resume, read it, and says
+    "I'm applying" must not have to walk three status moves to say so."""
+    transition(ApplicationStatus.TAILORED, ApplicationStatus.APPLIED)
+
+
+def test_the_push_flow_still_has_its_waiting_state():
+    """The direct edge is an addition, not a replacement."""
+    transition(ApplicationStatus.TAILORED, ApplicationStatus.PENDING_APPROVAL)
+    transition(ApplicationStatus.PENDING_APPROVAL, ApplicationStatus.APPLIED)
+
+
+def test_applying_still_requires_a_resume_to_exist():
+    """The new edge starts at TAILORED, so it does not open a path from a
+    job the system has merely scored."""
+    with pytest.raises(InvalidTransitionError):
+        transition(ApplicationStatus.SCORED, ApplicationStatus.APPLIED)

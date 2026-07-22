@@ -28,7 +28,17 @@ class ApplicationStatus(str, Enum):
 VALID_TRANSITIONS: dict[ApplicationStatus, set[ApplicationStatus]] = {
     ApplicationStatus.DISCOVERED: {ApplicationStatus.SCORED, ApplicationStatus.REJECTED},
     ApplicationStatus.SCORED: {ApplicationStatus.TAILORED, ApplicationStatus.REJECTED},
-    ApplicationStatus.TAILORED: {ApplicationStatus.PENDING_APPROVAL, ApplicationStatus.APPLYING},
+    # APPLIED is reachable directly because the conversational path has no
+    # use for PENDING_APPROVAL. That state means "the system produced a CV
+    # and is waiting for a human" — it has duration only in the scheduler's
+    # push flow, where the human is asleep. A user who asked for the resume,
+    # read it, and says "I'm applying" would otherwise have to walk three
+    # status moves to express one intent.
+    ApplicationStatus.TAILORED: {
+        ApplicationStatus.PENDING_APPROVAL,
+        ApplicationStatus.APPLYING,
+        ApplicationStatus.APPLIED,
+    },
     ApplicationStatus.PENDING_APPROVAL: {
         ApplicationStatus.APPLIED,
         ApplicationStatus.USER_SKIPPED,

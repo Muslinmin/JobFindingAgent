@@ -93,12 +93,27 @@ TOOL_SCHEMAS: list[dict] = [
     ),
     _tool(
         "search_jobs",
-        "Search external job sources for a free-text query and ingest what's "
-        "found into the pipeline (dedup → DISCOVERED → scored). This is not a "
+        "Search external job sources for a query and ingest what's found "
+        "into the pipeline (dedup → DISCOVERED → scored). This is not a "
         "preview — every result enters the database; over-broad recall is "
-        "absorbed by the scorer, not filtered here.",
+        "absorbed by the scorer, not filtered here. "
+        "**Keep the query to one or two keywords.** Sources match keywords "
+        "literally and require every one of them to appear, so each extra "
+        "word narrows the search sharply — a long phrase reliably returns "
+        "nothing. If a search comes back empty, try again with FEWER and "
+        "broader words, never more. To cover several angles, call this once "
+        "per angle rather than combining them into one query.",
         {
-            "query": {"type": "string", "description": "Free-text search query, e.g. 'backend engineer python Singapore'."},
+            "query": {
+                "type": "string",
+                "description": (
+                    "One or two keywords, e.g. 'robotics' or 'backend engineer'. "
+                    "Not a sentence and not a list of synonyms. Omit the location — "
+                    "the configured sources are already region-specific, so adding "
+                    "a place name only discards results. Omit generic filler like "
+                    "'job', 'role', or 'position'."
+                ),
+            },
             "sources": {
                 "type": "array",
                 "items": {"type": "string"},
@@ -165,19 +180,45 @@ TOOL_SCHEMAS: list[dict] = [
     _tool(
         "draft_followup",
         "Draft a follow-up email for a job that's already been applied to. "
-        + _RESOLVE_FIRST + " This only produces and registers the draft — it "
-        "never changes status or follow_up_count. Drafting is not sending.",
+        + _RESOLVE_FIRST + " Returns the email text for you to show the user "
+        "to copy and send themselves. It never changes status or "
+        "follow_up_count — drafting is not sending, and it is not the "
+        "system's own reminder either. Only works for a job that was "
+        "actually applied to.",
         {
             "job_id": {"type": "integer", "description": "The resolved job id."},
+            "note": {
+                "type": "string",
+                "description": (
+                    "The user's own instruction for this draft, in their words, e.g. "
+                    "'mention I've since shipped the robotics project'. Pass it "
+                    "through — never invent one, and never add a fact they didn't say."
+                ),
+            },
         },
         ["job_id"],
     ),
     _tool(
         "draft_cover_letter",
-        "Draft a cover letter for a job. " + _RESOLVE_FIRST + " This only "
-        "produces and registers the draft — it never changes status.",
+        "Draft a cover letter for a job. " + _RESOLVE_FIRST + " Returns the "
+        "letter text — show it to the user in full so they can review it — "
+        "and saves it as an artifact. It never changes status. If the user "
+        "wants changes, call it again with a `note` saying what to change; "
+        "the new draft replaces the saved one and the previous version is "
+        "kept as a backup. Everything the letter claims must come from the "
+        "candidate's profile, so it can be refused with `guard_violation` "
+        "if the draft asserted something unsupported — relay that rather "
+        "than retrying unchanged.",
         {
             "job_id": {"type": "integer", "description": "The resolved job id."},
+            "note": {
+                "type": "string",
+                "description": (
+                    "The user's own instruction for this draft, in their words, e.g. "
+                    "'too formal, and lead with the robotics work'. Pass it through — "
+                    "never invent one, and never add a fact they didn't say."
+                ),
+            },
         },
         ["job_id"],
     ),

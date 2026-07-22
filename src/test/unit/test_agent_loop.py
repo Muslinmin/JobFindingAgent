@@ -5,9 +5,17 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from agent.handlers import ATTACHMENT_KEY
 from agent.loop import MAX_ITERATIONS, Agent
 from app.conversation.models import Role
 from profile.schema import Profile, Skill
+
+
+async def _reply(agent, session_id, text) -> str:
+    """`run` returns a `TurnResult` — text plus any files the turn made.
+    Almost every case here is about the text, so they go through this and
+    the attachment channel gets its own tests at the bottom."""
+    return (await agent.run(session_id, text)).reply
 
 
 def _call(name, args: dict, id="call_1"):
@@ -61,7 +69,7 @@ def agent(llm, dispatcher, context, profile_path):
 
 async def test_final_answer_returns_the_text(agent, llm):
     llm.chat.return_value = _response(content="You have 3 active jobs.")
-    assert await agent.run("s1", "what's in my pipeline?") == "You have 3 active jobs."
+    assert await _reply(agent, "s1", "what's in my pipeline?") == "You have 3 active jobs."
 
 
 async def test_final_answer_after_one_tool_call(agent, llm, dispatcher):
@@ -71,7 +79,7 @@ async def test_final_answer_after_one_tool_call(agent, llm, dispatcher):
     ]
     dispatcher.dispatch.return_value = [{"id": 42, "role": "Data Analyst", "company": "PUB"}]
 
-    reply = await agent.run("s1", "did I apply to PUB?")
+    reply = await _reply(agent, "s1", "did I apply to PUB?")
 
     assert reply == "Found it — PUB, Data Analyst."
     dispatcher.dispatch.assert_called_once_with("find_jobs", {"company": "PUB"})
@@ -84,7 +92,7 @@ async def test_tool_result_is_fed_back_to_the_model(agent, llm, dispatcher):
     ]
     dispatcher.dispatch.return_value = [{"id": 42}]
 
-    await agent.run("s1", "x")
+    await _reply(agent, "s1", "x")
 
     second_call_messages = llm.chat.call_args_list[1].args[0]
     tool_messages = [m for m in second_call_messages if m.get("role") == "tool"]
@@ -99,7 +107,7 @@ async def test_assistant_tool_calls_go_back_on_the_conversation(agent, llm, disp
         _response(tool_calls=[_call("find_jobs", {})]),
         _response(content="ok"),
     ]
-    await agent.run("s1", "x")
+    await _reply(agent, "s1", "x")
 
     messages = llm.chat.call_args_list[1].args[0]
     assistant = [m for m in messages if m.get("role") == "assistant" and m.get("tool_calls")]
@@ -120,7 +128,7 @@ async def test_expected_error_result_re_enters_the_loop(agent, llm, dispatcher):
         "ok": False, "error": "illegal_transition", "from": "rejected", "to": "offer", "allowed": [],
     }
 
-    reply = await agent.run("s1", "got an offer from PUB")
+    reply = await _reply(agent, "s1", "got an offer from PUB")
 
     assert "can't move it" in reply
     assert llm.chat.call_count == 2
@@ -134,7 +142,7 @@ async def test_expected_error_is_passed_through_verbatim(agent, llm, dispatcher)
     ]
     dispatcher.dispatch.return_value = error
 
-    await agent.run("s1", "x")
+    await _reply(agent, "s1", "x")
 
     messages = llm.chat.call_args_list[1].args[0]
     tool_message = [m for m in messages if m.get("role") == "tool"][0]
@@ -149,7 +157,7 @@ async def test_iteration_cap_returns_best_effort_not_an_error(agent, llm, dispat
         _response(tool_calls=[_call("find_jobs", {"job_title": f"q{i}"})])
         for i in range(MAX_ITERATIONS)
     ]
-    reply = await agent.run("s1", "x")
+    reply = await _reply(agent, "s1", "x")
 
     assert "couldn't fully finish" in reply
     assert llm.chat.call_count == MAX_ITERATIONS
@@ -160,7 +168,7 @@ async def test_iteration_cap_still_records_an_assistant_turn(agent, llm, context
         _response(tool_calls=[_call("find_jobs", {"job_title": f"q{i}"})])
         for i in range(MAX_ITERATIONS)
     ]
-    await agent.run("s1", "x")
+    await _reply(agent, "s1", "x")
 
     recorded = [c.args for c in context.record.call_args_list]
     assert recorded[-1][1] == Role.ASSISTANT
@@ -175,7 +183,7 @@ async def test_no_progress_guard_fires_on_identical_repeated_call(agent, llm, di
         _response(tool_calls=[_call("find_jobs", same)]),
         _response(content="unreachable"),
     ]
-    reply = await agent.run("s1", "x")
+    reply = await _reply(agent, "s1", "x")
 
     assert "stuck repeating" in reply
     assert llm.chat.call_count == 2
@@ -187,7 +195,7 @@ async def test_no_progress_guard_ignores_same_tool_with_different_args(agent, ll
         _response(tool_calls=[_call("find_jobs", {"job_title": "frontend"})]),
         _response(content="here are both"),
     ]
-    assert await agent.run("s1", "x") == "here are both"
+    assert await _reply(agent, "s1", "x") == "here are both"
 
 
 # ── stop condition 4: consecutive exceptions ──────────────────────────────────
@@ -200,7 +208,7 @@ async def test_two_consecutive_tool_exceptions_abort_the_turn(agent, llm, dispat
     ]
     dispatcher.dispatch.side_effect = RuntimeError("db is on fire")
 
-    reply = await agent.run("s1", "x")
+    reply = await _reply(agent, "s1", "x")
 
     assert "Something went wrong" in reply
 
@@ -212,7 +220,7 @@ async def test_a_single_tool_exception_does_not_abort(agent, llm, dispatcher):
     ]
     dispatcher.dispatch.side_effect = [RuntimeError("transient"), {"ok": True}]
 
-    assert await agent.run("s1", "x") == "recovered"
+    assert await _reply(agent, "s1", "x") == "recovered"
 
 
 async def test_exception_never_becomes_a_tool_result(agent, llm, dispatcher):
@@ -223,7 +231,7 @@ async def test_exception_never_becomes_a_tool_result(agent, llm, dispatcher):
     ]
     dispatcher.dispatch.side_effect = [RuntimeError("boom"), {"ok": True}]
 
-    await agent.run("s1", "x")
+    await _reply(agent, "s1", "x")
 
     messages = llm.chat.call_args_list[1].args[0]
     assert [m for m in messages if m.get("role") == "tool"] == []
@@ -239,7 +247,7 @@ async def test_a_crashed_tool_leaves_no_unanswered_tool_calls(agent, llm, dispat
     ]
     dispatcher.dispatch.side_effect = [RuntimeError("boom"), {"ok": True}]
 
-    await agent.run("s1", "x")
+    await _reply(agent, "s1", "x")
 
     messages = llm.chat.call_args_list[1].args[0]
     assert [m for m in messages if m.get("tool_calls")] == []
@@ -255,24 +263,24 @@ async def test_re_proposing_the_crashed_call_reports_a_crash_not_a_stall(agent, 
     ]
     dispatcher.dispatch.side_effect = RuntimeError("not wired")
 
-    assert "Something went wrong" in await agent.run("s1", "x")
+    assert "Something went wrong" in await _reply(agent, "s1", "x")
 
 
 async def test_two_consecutive_llm_exceptions_abort_the_turn(agent, llm):
     llm.chat.side_effect = [RuntimeError("429"), RuntimeError("429")]
-    assert "Something went wrong" in await agent.run("s1", "x")
+    assert "Something went wrong" in await _reply(agent, "s1", "x")
 
 
 async def test_llm_exception_recovers_if_the_retry_succeeds(agent, llm):
     llm.chat.side_effect = [RuntimeError("429"), _response(content="recovered")]
-    assert await agent.run("s1", "x") == "recovered"
+    assert await _reply(agent, "s1", "x") == "recovered"
 
 
 # ── turn recording ────────────────────────────────────────────────────────────
 
 async def test_records_user_turn_before_and_assistant_turn_after(agent, llm, context):
     llm.chat.return_value = _response(content="hello back")
-    await agent.run("s1", "hello")
+    await _reply(agent, "s1", "hello")
 
     calls = [c.args for c in context.record.call_args_list]
     assert calls[0] == ("s1", Role.USER, "hello")
@@ -285,7 +293,7 @@ async def test_composes_context_after_recording_the_user_turn(agent, llm, contex
     context.record = AsyncMock(side_effect=lambda *a: order.append("record"))
     context.build_context = AsyncMock(side_effect=lambda sid: order.append("build") or [])
 
-    await agent.run("s1", "hello")
+    await _reply(agent, "s1", "hello")
 
     assert order[:2] == ["record", "build"]
 
@@ -293,7 +301,7 @@ async def test_composes_context_after_recording_the_user_turn(agent, llm, contex
 async def test_tools_are_offered_on_every_llm_call(agent, llm):
     from agent.schemas import TOOL_SCHEMAS
 
-    await agent.run("s1", "x")
+    await _reply(agent, "s1", "x")
     assert llm.chat.call_args.args[1] == TOOL_SCHEMAS
 
 
@@ -303,13 +311,13 @@ async def test_malformed_tool_arguments_do_not_crash_the_turn(agent, llm, dispat
     bad = SimpleNamespace(id="c1", function=SimpleNamespace(name="find_jobs", arguments="{not json"))
     llm.chat.side_effect = [_response(tool_calls=[bad]), _response(content="ok")]
 
-    assert await agent.run("s1", "x") == "ok"
+    assert await _reply(agent, "s1", "x") == "ok"
     dispatcher.dispatch.assert_called_once_with("find_jobs", {})
 
 
 async def test_empty_final_answer_falls_back_to_best_effort(agent, llm):
     llm.chat.return_value = _response(content=None)
-    assert "couldn't fully finish" in await agent.run("s1", "x")
+    assert "couldn't fully finish" in await _reply(agent, "s1", "x")
 
 
 # ── event loop responsiveness ─────────────────────────────────────────────────
@@ -332,8 +340,60 @@ async def test_the_event_loop_stays_responsive_during_a_turn(agent, llm):
     llm.chat = AsyncMock(side_effect=slow_chat)
 
     task = asyncio.create_task(ticker())
-    reply = await agent.run("s1", "x")
+    reply = await _reply(agent, "s1", "x")
     task.cancel()
 
     assert reply == "done"
     assert ticks > 1
+
+
+# ── attachments ───────────────────────────────────────────────────────────────
+
+async def test_a_produced_file_leaves_the_result_before_the_model_sees_it(agent, llm, dispatcher):
+    """The model is told an artifact exists; it never sees the file. The
+    attachment key is popped, so the tool message it reads carries only the
+    narration fields."""
+    llm.chat = AsyncMock(side_effect=[
+        _response(tool_calls=[_call("tailor_resume", {"job_id": 1})]),
+        _response(content="tailored it"),
+    ])
+    dispatcher.dispatch = AsyncMock(return_value={
+        "ok": True, "artifact_id": 7,
+        ATTACHMENT_KEY: {"kind": "cv_pdf", "filename": "cv.pdf", "path": "/tmp/cv.pdf",
+                         "mime_type": "application/pdf"},
+    })
+
+    result = await agent.run("s1", "tailor my cv")
+
+    messages = llm.chat.call_args_list[1].args[0]
+    tool_message = next(m for m in messages if m.get("role") == "tool")
+    assert ATTACHMENT_KEY not in json.loads(tool_message["content"])
+    assert json.loads(tool_message["content"])["artifact_id"] == 7
+
+    assert [a["filename"] for a in result.attachments] == ["cv.pdf"]
+
+
+async def test_a_turn_that_makes_no_file_carries_no_attachments(agent, llm, dispatcher):
+    dispatcher.dispatch = AsyncMock(return_value=[{"id": 1}])
+    assert (await agent.run("s1", "x")).attachments == []
+
+
+async def test_a_file_survives_a_turn_that_hits_the_iteration_cap(agent, llm, dispatcher):
+    """A turn that ran out of iterations after producing a CV still owes the
+    user that CV — the cap is a best-effort exit, not a rollback."""
+    # Distinct args every round so the no-progress guard never fires first.
+    llm.chat = AsyncMock(side_effect=[
+        _response(tool_calls=[_call("tailor_resume", {"job_id": i})])
+        for i in range(MAX_ITERATIONS)
+    ])
+    dispatcher.dispatch = AsyncMock(side_effect=[
+        {"ok": True,
+         ATTACHMENT_KEY: {"kind": "cv_pdf", "filename": "cv.pdf", "path": "/tmp/cv.pdf",
+                          "mime_type": "application/pdf"}},
+        *[{"ok": True} for _ in range(MAX_ITERATIONS - 1)],
+    ])
+
+    result = await agent.run("s1", "x")
+
+    assert "couldn't fully finish" in result.reply
+    assert len(result.attachments) == 1

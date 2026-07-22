@@ -30,11 +30,12 @@ with no answering `tool` message is a request the provider rejects.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass, field
 
 from loguru import logger
 
 from agent.context import ConversationContext
-from agent.handlers import ToolDispatcher
+from agent.handlers import ATTACHMENT_KEY, ToolDispatcher
 from agent.prompt import compose
 from agent.schemas import TOOL_SCHEMAS
 from app.conversation.models import Role
@@ -52,6 +53,22 @@ _NO_PROGRESS_REPLY = (
     "Could you give me a bit more detail about which job you mean?"
 )
 _ERROR_REPLY = "Something went wrong on my end and I couldn't finish that. Please try again."
+
+
+@dataclass
+class TurnResult:
+    """What one turn produced: the text to say, and any files made along the
+    way. Files are a separate channel rather than part of the reply because
+    they must reach the user without passing through the model — the model
+    is told a PDF exists, `POST /chat` is what actually ships it.
+
+    Each attachment is `{kind, filename, path, mime_type}`; the path is
+    read and encoded at the transport boundary, so no file bytes ever enter
+    the agent layer.
+    """
+
+    reply: str
+    attachments: list[dict] = field(default_factory=list)
 
 
 def _tool_calls(message) -> list:
@@ -94,18 +111,22 @@ class Agent:
         self._context = context
         self._profile_path = profile_path
 
-    async def run(self, session_id: str, user_text: str) -> str:
+    async def run(self, session_id: str, user_text: str) -> TurnResult:
         await self._context.record(session_id, Role.USER, user_text)
 
         profile = load_profile(self._profile_path)
         messages = await compose(session_id, profile, self._context)
 
-        reply = await self._iterate(messages)
+        # Passed in rather than returned so `_iterate`'s five stop
+        # conditions stay single-value returns: a turn that hit the
+        # iteration cap after producing a CV still owes the user that CV.
+        attachments: list[dict] = []
+        reply = await self._iterate(messages, attachments)
 
         await self._context.record(session_id, Role.ASSISTANT, reply)
-        return reply
+        return TurnResult(reply=reply, attachments=attachments)
 
-    async def _iterate(self, messages: list[dict]) -> str:
+    async def _iterate(self, messages: list[dict], attachments: list[dict]) -> str:
         last_call: tuple[str, str] | None = None
         crashed_call: tuple[str, str] | None = None
         consecutive_exceptions = 0
@@ -188,6 +209,13 @@ class Agent:
                     if consecutive_exceptions >= MAX_CONSECUTIVE_EXCEPTIONS:
                         return _ERROR_REPLY
                     break
+
+                # Popped, not copied: a file the handler produced leaves the
+                # result here and travels out on the turn instead. The model
+                # is told the artifact exists — id, kind, whether it
+                # replaced one — and never sees a byte of it.
+                if isinstance(result, dict) and ATTACHMENT_KEY in result:
+                    attachments.append(result.pop(ATTACHMENT_KEY))
 
                 messages.append(
                     {

@@ -7,6 +7,7 @@ which a mocked store cannot demonstrate. Only the LLM is faked.
 """
 
 import asyncio
+import base64
 import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -17,11 +18,12 @@ import pytest
 from fastapi import FastAPI
 
 from agent.context import ConversationContext
-from agent.loop import Agent
+from agent.loop import Agent, TurnResult
 from app.conversation.database import connect, initialise_schema
 from app.conversation.repository import ConversationRepository
 from app.conversation.store import ConversationStore
 from app.conversation.transcript_store import TranscriptStore
+from app.models.enums import ArtifactKind
 from app.routes.chat import router as chat_router
 from profile.schema import Profile, Skill
 
@@ -127,6 +129,44 @@ async def test_empty_message_is_rejected_by_validation(client):
 
 async def test_response_has_no_attachments_when_the_agent_produced_no_file(client):
     assert (await client.post("/chat", json={"message": "hi"})).json()["attachments"] == []
+
+
+async def test_a_file_the_agent_produced_rides_out_base64_encoded(client, tmp_path):
+    """The agent holds no Telegram client, so every file it makes has to
+    leave in this one response (architecture_v2.md, POST /chat transport)."""
+    pdf = tmp_path / "govtech_backend-engineer_cv_pdf.pdf"
+    pdf.write_bytes(b"%PDF-1.4 pretend")
+
+    client._transport.app.state.agent.run = AsyncMock(return_value=TurnResult(
+        reply="Tailored it.",
+        attachments=[{"kind": ArtifactKind.CV_PDF, "filename": pdf.name,
+                      "path": str(pdf), "mime_type": "application/pdf"}],
+    ))
+
+    body = (await client.post("/chat", json={"message": "tailor my cv"})).json()
+
+    assert body["reply"] == "Tailored it."
+    assert len(body["attachments"]) == 1
+    attachment = body["attachments"][0]
+    assert attachment["filename"] == pdf.name
+    assert attachment["kind"] == "cv_pdf"
+    assert base64.b64decode(attachment["content_b64"]) == b"%PDF-1.4 pretend"
+
+
+async def test_a_missing_file_degrades_the_turn_instead_of_failing_it(client, tmp_path):
+    """The reply is the more valuable half and is already composed; losing
+    the attachment must not lose the answer too."""
+    client._transport.app.state.agent.run = AsyncMock(return_value=TurnResult(
+        reply="Tailored it.",
+        attachments=[{"kind": ArtifactKind.CV_PDF, "filename": "gone.pdf",
+                      "path": str(tmp_path / "gone.pdf"), "mime_type": "application/pdf"}],
+    ))
+
+    response = await client.post("/chat", json={"message": "tailor my cv"})
+
+    assert response.status_code == 200
+    assert response.json()["reply"] == "Tailored it."
+    assert response.json()["attachments"] == []
 
 
 # ── per-session locking ───────────────────────────────────────────────────────

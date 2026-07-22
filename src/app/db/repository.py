@@ -188,6 +188,26 @@ async def list_jobs(
     return [_row_to_job(row) for row in rows]
 
 
+def _loose(text: str) -> str:
+    """Reduce a title to letters and digits for matching.
+
+    Job titles arrive with punctuation that varies by source and gets
+    silently rewritten in transit: the same HTX role is stored as
+    'Engineer / Lead Engineer - Embodied AI…' while a caller looking for it
+    asked for 'Engineer / Lead Engineer – Embodied AI…' — an en-dash where
+    the record has a hyphen, and zero rows came back. Slash spacing varies
+    the same way ('Engineer/Lead' vs 'Engineer / Lead'), sometimes between
+    two postings from the same employer.
+
+    None of that punctuation carries meaning worth matching on, so it is
+    dropped from both sides of the comparison. This deliberately widens
+    recall: 'R&T' also matches 'RT'. For a lookup whose whole job is to
+    find the record the user is talking about, a false positive is a
+    disambiguation prompt and a false negative is a dead end.
+    """
+    return "".join(ch for ch in text.lower() if ch.isalnum())
+
+
 async def find_jobs(
     db: aiosqlite.Connection,
     job_title: str,
@@ -196,12 +216,18 @@ async def find_jobs(
     limit: int = 50,
 ) -> list[Job]:
     db.row_factory = aiosqlite.Row
-    conditions = ["role LIKE ? COLLATE NOCASE"]
-    params: list = [f"%{job_title}%"]
+
+    # Registered per call: idempotent, cheap, and it keeps the normalisation
+    # rule beside the query that depends on it rather than in connection
+    # setup, which tests and the app build separately.
+    await db.create_function("loose", 1, _loose)
+
+    conditions = ["loose(role) LIKE ?"]
+    params: list = [f"%{_loose(job_title)}%"]
 
     if company is not None:
-        conditions.append("company LIKE ? COLLATE NOCASE")
-        params.append(f"%{company}%")
+        conditions.append("loose(company) LIKE ?")
+        params.append(f"%{_loose(company)}%")
 
     if status_set is not None:
         if not status_set:
