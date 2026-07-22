@@ -1,7 +1,7 @@
 """Manual, one-off script — NOT part of the pytest suite.
 
 Runs the real tailoring pipeline end to end: your actual profile.json,
-a real job description, a REAL LLM call (agent.llm_client.AsyncLLMClient,
+a real job description, a REAL LLM call (agent.llm_client.TaskLLMClient,
 using MODEL / MODEL_API_KEY from .env), and the real tectonic renderer.
 Meant to be run by hand to eyeball a tailored CV, not on every test run —
 it costs a real API call.
@@ -20,7 +20,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-from agent.llm_client import AsyncLLMClient  # noqa: E402
+from agent.llm_client import TaskLLMClient  # noqa: E402
 from profile.schema import Profile  # noqa: E402
 from tailoring.tailor import TailoringError, tailor  # noqa: E402
 
@@ -63,10 +63,10 @@ Requirements:
 
 
 class LoggingLLM:
-    """Wraps the real AsyncLLMClient just to keep the raw response around —
+    """Wraps the real TaskLLMClient just to keep the raw response around —
     if tailor() raises, we still want to see exactly what the LLM said."""
 
-    def __init__(self, client: AsyncLLMClient):
+    def __init__(self, client: TaskLLMClient):
         self._client = client
         self.last_prompt: str | None = None
         self.last_response: str | None = None
@@ -79,7 +79,7 @@ class LoggingLLM:
 
 async def main() -> None:
     profile = Profile.model_validate(json.loads(PROFILE_PATH.read_text()))
-    llm = LoggingLLM(AsyncLLMClient())
+    llm = LoggingLLM(TaskLLMClient())
 
     print(f"Tailoring for: {profile.name}")
     print(f"Job: Robotics Software Engineer (Job ID 20896)")

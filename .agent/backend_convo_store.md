@@ -33,11 +33,18 @@ transcript store), `src/test/integration/test_conversation_database.py`,
 (all three against real temp SQLite files / real temp directories, no
 mocks). 29 tests total, all passing.
 
-**Not built here (by design):** composition-root wiring (`main.py`,
-`conversation_db_path`/`transcript_base_dir` settings) and the agent's own
-`is_idle`/`session_idle_minutes` policy — both belong to whichever layer
-first calls this store, which does not exist yet. See `agent_v2.md` §6 for
-where that logic lands.
+**Not built here (by design), now built by the agent layer:** the
+composition-root wiring (`main.py`, plus the `conversation_db_path` /
+`transcript_base_dir` settings) and the `is_idle` / `session_idle_minutes`
+policy landed with `agent_v2.md`'s WP-A3 and WP-A8. `is_idle` lives in
+`agent/context.py`, the settings in `app/config.py`, and the store is
+constructed in `lifespan` exactly as the wiring sketch below shows.
+
+One thing the sketch below does **not** show, and that a caller needs:
+`get_latest_session` + `start_session` is a read-then-maybe-write, so the
+*caller* must serialise it. Two concurrent first messages otherwise both
+read "no session" and both create one. `POST /chat` holds a global
+resolution lock around that decision; see `concurrencyFor_agentV2.md`.
 
 ---
 

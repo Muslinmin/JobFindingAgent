@@ -15,6 +15,8 @@ def build_applications(
     notifications_bot_token: str,
     chat_id: int,
     backend_base_url: str,
+    chat_read_timeout_s: float = 240.0,
+    notifications_read_timeout_s: float = 10.0,
 ) -> tuple[Application, Application, NotificationTelegramClient]:
     """Build both Application instances (chat + notifications).
 
@@ -28,9 +30,19 @@ def build_applications(
     attach here. Send + backend clients are stashed on the respective
     app.bot_data. Returns (chat_app, notifications_app, notification_client)
     — the last for the scheduler's future push path.
+
+    Both httpx clients get an explicit `timeout=` rather than relying on
+    httpx's 5s default (concurrencyFor_agentV2.md F-4/WP-C4): a ReAct turn
+    routinely exceeds 5s without anything going wrong, and a client that
+    gives up early on work the server is still doing surfaces a spurious
+    error and orphans the reply. `chat_read_timeout_s` must stay strictly
+    greater than `settings.agent_turn_deadline_s` (the caller's job — see
+    the timeout ladder in concurrencyFor_agentV2.md §3). The notifications
+    client only ever calls deterministic, non-LLM routes (`/action`,
+    `/follow-up`), so it keeps a much shorter default.
     """
     chat_app = ApplicationBuilder().token(chat_bot_token).build()
-    chat_http = httpx.AsyncClient(base_url=backend_base_url)
+    chat_http = httpx.AsyncClient(base_url=backend_base_url, timeout=chat_read_timeout_s)
     chat_send_client = ChatTelegramClient(chat_app.bot, chat_id)
     chat_app.bot_data.update(
         {
@@ -44,7 +56,7 @@ def build_applications(
     chat_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     notifications_app = ApplicationBuilder().token(notifications_bot_token).build()
-    notifications_http = httpx.AsyncClient(base_url=backend_base_url)
+    notifications_http = httpx.AsyncClient(base_url=backend_base_url, timeout=notifications_read_timeout_s)
     notification_client = NotificationTelegramClient(notifications_app.bot, chat_id)
     notifications_app.bot_data.update(
         {

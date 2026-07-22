@@ -74,5 +74,27 @@ class Settings(BaseSettings):
     tailoring_output_dir: str = "artifacts"
     digest_narrative: bool = False
 
+    # Agent — concurrency & timeout ladder (concurrencyFor_agentV2.md §3).
+    # Invariant: llm_call_timeout_s < agent_turn_deadline_s < backend_read_timeout_s
+    # — if the client timeout is ever the smallest, the bot gives up on work
+    # the server is still doing (concurrencyFor_agentV2.md F-4).
+    llm_call_timeout_s: int = 60
+    agent_turn_deadline_s: int = 180
+    backend_read_timeout_s: int = 240
+    llm_retry_wait_s: int = 5
+    llm_max_retries: int = 3
+
+    # Agent — session policy (agent_v2.md §6). The idle threshold lives here,
+    # in the agent's config, never in the conversation store: the store
+    # reports and creates sessions, the agent alone decides continue-vs-new.
+    session_idle_minutes: int = 30
+
+    # Conversation store paths. A SECOND SQLite file, deliberately not extra
+    # tables in jobs.db — SQLite takes one writer at a time, and transcript
+    # writes on every chat turn would otherwise contend with the scheduler's
+    # job writes (backend_convo_store.md §Deferred).
+    conversation_db_path: str = "./conversations.db"
+    transcript_base_dir: str = "transcripts"
+
 
 settings = Settings()

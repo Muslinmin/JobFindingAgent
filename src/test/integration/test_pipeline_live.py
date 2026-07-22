@@ -30,7 +30,7 @@ import pytest
 from loguru import logger
 from telegram import Bot
 
-from agent.llm_client import AsyncLLMClient
+from agent.llm_client import TaskLLMClient
 from app.config import settings
 from app.db.database import create_tables
 from app.models.enums import ApplicationStatus
@@ -157,7 +157,7 @@ async def test_live_scrape_score_and_notify(tmp_path):
 
         await run_tailor(
             service=service,
-            llm=AsyncLLMClient(),
+            llm=TaskLLMClient(),
             telegram=telegram,
             settings=tailor_settings,
             profile_path=Path(settings.profile_path),

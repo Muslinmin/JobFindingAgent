@@ -23,7 +23,7 @@ from pathlib import Path
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from agent.llm_client import AsyncLLMClient
+from agent.llm_client import TaskLLMClient
 from app.config import Settings
 from app.services.service import JobService
 from scoring.protocol import Scorer
@@ -45,7 +45,7 @@ class SchedulerDeps:
 
     service: JobService
     scorer: Scorer
-    llm: AsyncLLMClient
+    llm: TaskLLMClient
     telegram: NotificationTelegramClient
     adapters: list[JobSource]
     profile_path: Path

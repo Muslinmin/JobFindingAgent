@@ -42,6 +42,19 @@ def _index_label(item: object) -> str:
     return str(item)
 
 
+def _index_entry(item: object) -> str:
+    """One index-tier item as `id: label` (agent_v2.md §5).
+
+    The id is carried, not just the label, because reference resolution (§7)
+    maps a phrase to a *skill_id* — the agent can only cite one if the
+    projection showed it. Items without an id (target_tracks are bare
+    strings) render as the label alone.
+    """
+    label = _index_label(item)
+    item_id = getattr(item, "id", None)
+    return f"{item_id}: {label}" if item_id else label
+
+
 def _project_identity_model(instance: BaseModel) -> dict[str, object]:
     """Project a nested model (e.g. one Education entry) down to its OWN
     identity-tier fields, verbatim. Mirrors the top-level Profile filter one
@@ -85,8 +98,8 @@ def profile_summary(p: Profile) -> str:
             sections.append(f"{name}: {text}")
 
         elif t == INDEX:
-            labels = ", ".join(_index_label(item) for item in value)
-            sections.append(f"{name}: {labels}")
+            entries = ", ".join(_index_entry(item) for item in value)
+            sections.append(f"{name}: {entries}")
 
     return "\n".join(sections)
 

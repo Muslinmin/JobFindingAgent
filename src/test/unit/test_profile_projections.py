@@ -54,6 +54,23 @@ def test_profile_summary_projects_index_collections_to_labels():
     assert "backend engineering" in summary  # target_tracks, index tier
 
 
+def test_profile_summary_carries_index_ids_alongside_labels():
+    """agent_v2.md §5: index tier projects to {id, label}, not label alone —
+    reference resolution (§7) resolves a phrase to a skill_id, which the
+    agent can only cite if the projection showed it."""
+    p = _profile()
+    summary = profile_summary(p)
+    assert "python: Python" in summary
+    assert "exp_1: Backend Engineer" in summary
+
+
+def test_profile_summary_renders_id_less_index_items_as_bare_labels():
+    # target_tracks are plain strings — no id to carry.
+    p = _profile()
+    summary = profile_summary(p)
+    assert "target_tracks: backend engineering" in summary
+
+
 def test_profile_summary_applies_char_budget_backstop_to_identity_scalars():
     oversized = "x" * (IDENTITY_CHAR_BUDGET + 1)
     p = _profile(candidate_status=oversized)

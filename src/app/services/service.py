@@ -38,6 +38,12 @@ class JobService:
         fingerprint = self._fingerprint_fn(job)
         return await repo.upsert_job(self._db, job, fingerprint, _now())
 
+    async def get_job(self, job_id: int) -> Job | None:
+        """Single-record read. None when absent — the caller decides whether
+        a miss is an error (the agent turns it into a `not_found` result the
+        model narrates; a scheduler job would treat it as a skip)."""
+        return await repo.get_job_by_id(self._db, job_id)
+
     async def transition_status(
         self, job_id: int, to_status: ApplicationStatus, score: int | None = None
     ) -> Job:

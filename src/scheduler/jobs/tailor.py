@@ -37,7 +37,7 @@ from pathlib import Path
 from loguru import logger
 from telegram import InlineKeyboardButton
 
-from agent.llm_client import AsyncLLMClient
+from agent.llm_client import TaskLLMClient
 from app.config import Settings
 from app.models.enums import ApplicationStatus, ArtifactKind, UserAction
 from app.models.job import ArtifactCreate, Job
@@ -50,7 +50,7 @@ from telegram_bot.notifications.client import NotificationTelegramClient
 async def _tailor_one(
     job: Job,
     service: JobService,
-    llm: AsyncLLMClient,
+    llm: TaskLLMClient,
     telegram: NotificationTelegramClient,
     profile_path: Path,
     template_path: Path,
@@ -118,7 +118,7 @@ async def _tailor_one(
 
 async def run_tailor(
     service: JobService,
-    llm: AsyncLLMClient,
+    llm: TaskLLMClient,
     telegram: NotificationTelegramClient,
     settings: Settings,
     profile_path: Path,

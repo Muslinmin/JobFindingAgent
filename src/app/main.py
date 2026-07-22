@@ -1,4 +1,6 @@
+import asyncio
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
 import aiosqlite
@@ -6,8 +8,16 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI
 from loguru import logger
 
-from agent.llm_client import AsyncLLMClient
+from agent.context import ConversationContext
+from agent.handlers import AgentDeps, ToolDispatcher
+from agent.llm_client import AgentLLMClient, TaskLLMClient
+from agent.loop import Agent
 from app.config import settings
+from app.conversation.database import connect as connect_conversations
+from app.conversation.database import initialise_schema as initialise_conversation_schema
+from app.conversation.repository import ConversationRepository
+from app.conversation.store import ConversationStore
+from app.conversation.transcript_store import TranscriptStore
 from app.db.database import create_tables
 from app.exception_handlers import register_exception_handlers
 from app.routes.actions import router as actions_router
@@ -51,6 +61,7 @@ async def lifespan(app: FastAPI):
         notifications_bot_token=settings.telegram_notifications_bot_token,
         chat_id=settings.telegram_chat_id,
         backend_base_url=settings.api_base_url,
+        chat_read_timeout_s=settings.backend_read_timeout_s,
     )
     # Scheduler's future push path — see telegram_v2.md § Step 4 WP-T1.
     app.state.notification_client = notification_client
@@ -64,7 +75,7 @@ async def lifespan(app: FastAPI):
     scheduler_deps = SchedulerDeps(
         service=app.state.job_service,
         scorer=app.state.scorer,
-        llm=AsyncLLMClient(),
+        llm=TaskLLMClient(),
         telegram=app.state.notification_client,
         adapters=adapters,
         profile_path=Path(settings.profile_path),
@@ -76,12 +87,51 @@ async def lifespan(app: FastAPI):
     await start_scheduler(scheduler)
     logger.info("Scheduler started — all six jobs registered")
 
+    # ── Agent layer (agent_v2.md WP-A8) ──────────────────────────────────
+    # Bottom-up, no circular dependency. The conversations database is a
+    # SECOND SQLite file: its writes never contend with jobs writes, which
+    # is the whole reason it isn't extra tables in jobs.db.
+    conversation_db = await connect_conversations(settings.conversation_db_path)
+    await initialise_conversation_schema(conversation_db)
+    conversation_store = ConversationStore(
+        ConversationRepository(conversation_db),
+        TranscriptStore(Path(settings.transcript_base_dir)),
+        lambda: datetime.now(timezone.utc).isoformat(),
+    )
+    app.state.conversation_context = ConversationContext(
+        conversation_store, settings.session_idle_minutes
+    )
+    app.state.agent = Agent(
+        llm=AgentLLMClient(),
+        dispatcher=ToolDispatcher(
+            AgentDeps(
+                job_service=app.state.job_service,
+                scorer=app.state.scorer,
+                llm=TaskLLMClient(),
+                settings=settings,
+                profile_path=Path(settings.profile_path),
+                queries_path=Path(settings.search_queries_path),
+            )
+        ),
+        context=app.state.conversation_context,
+        profile_path=Path(settings.profile_path),
+    )
+    # Per-session turn locks, created once here and populated lazily by the
+    # route. The scheduler receives NO reference to any of this — it and the
+    # conversation store are total strangers by design.
+    app.state.session_locks: dict[str, asyncio.Lock] = {}
+    # Guards continue-vs-new only, so two simultaneous first messages can't
+    # each start a session and split one conversation in two.
+    app.state.session_resolution_lock = asyncio.Lock()
+    logger.info("Agent constructed, conversation store wired")
+
     yield
 
     await stop_scheduler(scheduler)
     await stop_bots(chat_app, notifications_app)
+    await conversation_db.close()
     await db.close()
-    logger.info("Scheduler, Telegram bots, and database connection shut down")
+    logger.info("Scheduler, Telegram bots, and both database connections shut down")
 
 
 app = FastAPI(lifespan=lifespan)

@@ -28,7 +28,7 @@ import aiosqlite  # noqa: E402
 from loguru import logger  # noqa: E402
 from telegram import Bot  # noqa: E402
 
-from agent.llm_client import AsyncLLMClient  # noqa: E402
+from agent.llm_client import TaskLLMClient  # noqa: E402
 from app.config import settings  # noqa: E402
 from app.db.database import create_tables  # noqa: E402
 from app.models.enums import ApplicationStatus  # noqa: E402
@@ -85,7 +85,7 @@ async def main() -> None:
     print("Tailoring 1 job (real LLM + real tectonic compile) ...")
     await run_tailor(
         service=service,
-        llm=AsyncLLMClient(),
+        llm=TaskLLMClient(),
         telegram=telegram,
         settings=tailor_settings,
         profile_path=Path(settings.profile_path),

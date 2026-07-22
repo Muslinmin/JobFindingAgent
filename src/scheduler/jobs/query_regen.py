@@ -31,7 +31,7 @@ from profile.loader import load_profile
 
 class QueryRegenLLM(Protocol):
     """Text-in, text-out — same narrow shape as tailoring.prompt.LLMTailor
-    and scheduler.jobs.follow_up.DraftLLM. `AsyncLLMClient` satisfies all
+    and scheduler.jobs.follow_up.DraftLLM. `TaskLLMClient` satisfies all
     three structurally; there is deliberately no shared base Protocol so
     each module states only what it needs."""
 

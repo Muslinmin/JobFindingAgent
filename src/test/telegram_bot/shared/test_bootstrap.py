@@ -1,5 +1,6 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from app.config import settings
 from telegram_bot.chat.agent_client import AgentBackendClient
 from telegram_bot.chat.client import ChatTelegramClient
 from telegram_bot.notifications.client import NotificationTelegramClient
@@ -64,6 +65,42 @@ def test_notifications_app_gets_send_and_backend_clients_and_callback_handler():
     assert isinstance(notifications_app.bot_data["send_client"], NotificationTelegramClient)
     assert isinstance(notifications_app.bot_data["backend_client"], NotifyBackendClient)
     assert notifications_app.add_handler.call_count == 1
+
+
+def test_chat_http_client_gets_explicit_timeout_not_httpx_default():
+    chat_app, notifications_app = _fake_app(), _fake_app()
+
+    with patch("telegram_bot.shared.bootstrap.ApplicationBuilder", _patched_builder([chat_app, notifications_app])):
+        build_applications("chat-token", "notif-token", CHAT_ID, BACKEND_URL, chat_read_timeout_s=99.0)
+
+    assert chat_app.bot_data["http_client"].timeout.read == 99.0
+
+
+def test_notifications_http_client_gets_explicit_timeout_not_httpx_default():
+    chat_app, notifications_app = _fake_app(), _fake_app()
+
+    with patch("telegram_bot.shared.bootstrap.ApplicationBuilder", _patched_builder([chat_app, notifications_app])):
+        build_applications("chat-token", "notif-token", CHAT_ID, BACKEND_URL, notifications_read_timeout_s=7.0)
+
+    assert notifications_app.bot_data["http_client"].timeout.read == 7.0
+
+
+def test_main_wires_chat_client_timeout_longer_than_turn_deadline():
+    """concurrencyFor_agentV2.md §3: the client must never give up on work
+    the server is still doing — the chat bot's read timeout must exceed
+    settings.agent_turn_deadline_s."""
+    chat_app, notifications_app = _fake_app(), _fake_app()
+
+    with patch("telegram_bot.shared.bootstrap.ApplicationBuilder", _patched_builder([chat_app, notifications_app])):
+        build_applications(
+            "chat-token",
+            "notif-token",
+            CHAT_ID,
+            BACKEND_URL,
+            chat_read_timeout_s=settings.backend_read_timeout_s,
+        )
+
+    assert chat_app.bot_data["http_client"].timeout.read > settings.agent_turn_deadline_s
 
 
 def _fake_running_app():

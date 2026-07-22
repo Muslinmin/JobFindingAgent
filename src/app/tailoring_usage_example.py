@@ -26,7 +26,7 @@ from pathlib import Path
 
 from loguru import logger
 
-from agent.llm_client import AsyncLLMClient
+from agent.llm_client import TaskLLMClient
 from app.config import settings
 from app.models.enums import ApplicationStatus, ArtifactKind
 from app.models.job import ArtifactCreate, Job
@@ -53,10 +53,10 @@ async def tailor_one_job(job_service: JobService, job: Job) -> None:
     #    complete(prompt: str) -> str`). Both are cheap to construct per
     #    call — load_profile re-validates every invariant on every call
     #    (tailoring.md: "no downstream layer should have to check whether
-    #    the object it was handed is trustworthy"), and AsyncLLMClient
+    #    the object it was handed is trustworthy"), and TaskLLMClient
     #    holds no state beyond the model name.
     profile = load_profile(settings.profile_path)
-    llm = AsyncLLMClient()
+    llm = TaskLLMClient()
 
     # 2. output_dir is the caller's own convention — tailor() will
     #    mkdir -p it and write cv.tex + cv.pdf (+ debug/ if requested).

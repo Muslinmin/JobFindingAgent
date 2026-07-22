@@ -37,7 +37,7 @@ from telegram_bot.notifications.client import NotificationTelegramClient
 
 class DraftLLM(Protocol):
     """The narrow contract this job needs from an LLM client — text in,
-    text out. `AsyncLLMClient.complete` already satisfies this structurally
+    text out. `TaskLLMClient.complete` already satisfies this structurally
     (same pattern as tailoring.prompt.LLMTailor)."""
 
     async def complete(self, prompt: str) -> str: ...
