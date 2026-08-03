@@ -1,0 +1,272 @@
+# (OLD V1) Job Application Tracker — Architecture & Tech Stack Overview
+
+---
+
+## What This App Is
+
+A job application tracker built as an agentic system. Instead of manually logging applications into a spreadsheet, you interact with the system in natural language and it handles discovery, storage, scoring, and status tracking automatically.
+
+The system is designed in discrete layers. Each layer has a single responsibility and communicates with the layers around it through clean interfaces. No layer knows the internal implementation of another.
+
+---
+
+## High-Level Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                     User Interface                       │
+│              Streamlit Dashboard / CLI                   │
+└────────────────────────┬────────────────────────────────┘
+                         │ HTTP
+┌────────────────────────▼────────────────────────────────┐
+│                   Backend API Layer                      │
+│                FastAPI + Pydantic + SQLite               │
+└──────────┬─────────────────────────────┬────────────────┘
+           │                             │
+┌──────────▼──────────┐     ┌────────────▼───────────────┐
+│    Agent Layer       │     │      Scoring & Dedup        │
+│  Anthropic API +     │     │   Keyword Match + SHA-256   │
+│  Tool Calling        │     │   Fingerprinting            │
+└──────────┬──────────┘     └────────────────────────────┘
+           │
+┌──────────▼──────────┐
+│   Scraping Layer     │
+│   Tavily Search API  │
+└─────────────────────┘
+```
+
+---
+
+## Tech Stack at a Glance
+
+| Layer | Technology | Purpose |
+|---|---|---|
+| Backend API | FastAPI | HTTP transport, routing, validation |
+| Database | SQLite → PostgreSQL | Persistent storage of job records |
+| ORM / Queries | aiosqlite + raw SQL | Async DB access via repository pattern |
+| Validation | Pydantic v2 | Schema enforcement on all I/O |
+| Config | pydantic-settings | Environment variable management |
+| Agent Brain | LiteLLM (Anthropic / OpenAI / Gemini) | Natural language reasoning + tool calling via ReAct loop |
+| Search | Tavily API | Web search built for agent use |
+| Scoring | Pure Python | Keyword-based job relevance scoring |
+| Deduplication | hashlib SHA-256 | Fingerprint-based duplicate prevention |
+| Logging | loguru | Structured, levelled application logs |
+| Testing | pytest + pytest-asyncio + httpx | Unit, integration, and E2E test coverage |
+| Containerisation | Docker | Consistent runtime across environments |
+| Frontend | Streamlit | Dashboard for visualising application data |
+| Scheduling | APScheduler | Periodic scraping and digest runs |
+
+---
+
+---
+
+## Layer 1 — Backend API
+
+**Responsibility:** Persist job application records and expose a validated HTTP interface for all reads and writes. This is the source of truth for the entire system.
+
+**Tech:** FastAPI, aiosqlite, Pydantic, SQLite
+
+**What it owns:**
+- The `jobs` database table and its schema
+- All SQL queries, isolated behind a Repository pattern
+- Status transition logic via a finite state machine
+- Idempotent upsert behaviour — duplicate inserts return the existing record, not an error
+- Five CRUD endpoints: create, list, get, update status, delete
+
+**Key design decisions:**
+- Route handlers contain zero business logic — they validate input and delegate to the repository
+- The `fingerprint` column (SHA-256 hash of company + role + url) enforces uniqueness at the DB level
+- Status transitions are enforced at the model layer before any DB write is attempted
+- The repository is the only file that knows the DB driver — swapping SQLite for PostgreSQL touches one file
+
+**Interfaces it exposes to other layers:**
+- `POST /jobs` — agent and scraper call this to log discovered jobs
+- `PATCH /jobs/{id}/status` — agent calls this when user updates an application
+- `GET /jobs` — frontend and agent call this to read current state
+
+**Detailed doc:** `backend.md`
+
+---
+
+## Layer 2 — Agent Brain
+
+**Responsibility:** Receive natural language input, reason about what action to take, and execute the correct tool. The agent is the orchestrator — it talks to the backend, the scraper, and the scorer, but owns none of their logic. It also owns the user profile, which is shaped through conversation over time.
+
+**Tech:** LiteLLM (model abstraction over Anthropic / OpenAI / Gemini), FastAPI `POST /chat` endpoint, aiosqlite (shared DB connection), Pydantic, loguru.
+
+**What it owns:**
+- The tool definitions and executors (`log_job`, `update_status`, `query_jobs`, `update_profile`, `search_jobs`)
+- The ReAct loop — reason, act, observe, repeat until done
+- The user profile (`profile.json`) — read at session start, written when the user shares preferences, backed up on every change
+- Routing user intent to the correct tool with the correct arguments
+- `POST /chat` — stateless endpoint that receives the full message history and returns the agent's reply
+
+**The tool loop:**
+
+```
+User message
+     │
+     ▼
+LLM receives message + tool schema definitions
+     │
+     ▼
+LLM returns tool_use block { tool_name, arguments }
+     │
+     ▼
+Backend executes the tool → calls repository or scraper
+     │
+     ▼
+Result returned to LLM as tool_result block
+     │
+     ▼
+LLM produces final natural language response
+     │  (loop repeats if another tool call is needed)
+     ▼
+stop_reason: "end_turn"
+```
+
+**Tools the agent can call:**
+
+| Tool | What it does |
+|---|---|
+| `log_job` | Calls `repo.insert_job` to persist a new application (idempotent) |
+| `update_status` | Calls `repo.update_job_status` to move an application forward |
+| `query_jobs` | Calls `repo.get_all_jobs` to retrieve and summarise current applications |
+| `update_profile` | Merges updates into `profile.json`; backs up the previous version on change |
+| `search_jobs` | Stubbed — will call the scraping layer (Week 3) to discover new listings |
+
+**Key design decisions:**
+- The LLM proposes actions — the backend validates and executes them. The model never writes directly to the DB
+- Tool definitions use OpenAI's function calling format; LiteLLM translates to the correct provider schema at runtime — switching models is one line in `.env`
+- The server is stateless — the client sends the full message history on every `/chat` call; no session storage required
+- The system prompt lives in `agent/prompts/system.md` as a template with a `{profile}` placeholder — prompt iteration requires no code changes
+- `LLMClient` is injected into `agent.run()` so tests can pass a mock without patching global state — no real API calls in tests
+- Profile writes are diff-checked; no diff means no write and no backup
+
+**Detailed doc:** `agent.md`
+
+---
+
+## Layer 3 — Scraping & Ingestion
+
+**Responsibility:** Discover job listings from external sources and feed them into the backend in a structured, deduplicated form.
+
+**Tech:** Tavily API, Python `httpx`
+
+**What it owns:**
+- Querying Tavily with a search string and returning raw results
+- Parsing and normalising raw results into `JobCreate`-shaped records
+- Passing normalised records to the backend via `POST /jobs`
+- Respecting rate limits and handling upstream failures gracefully
+
+**Why Tavily and not direct scraping:**
+Direct scraping of LinkedIn or Indeed violates their ToS and breaks frequently. Tavily is a search API purpose-built for agent use — it returns structured, clean results, handles JS-rendered pages, and has a stable interface.
+
+**Key design decisions:**
+- The scraper does not write to the DB directly — it calls the backend API, which handles deduplication and validation
+- If Tavily is unavailable, the scraper logs the failure and returns an empty list — it does not crash the pipeline
+- Rate limiting is handled with a configurable delay between requests
+
+**Detailed doc:** `scraper.md` *(coming)*
+
+---
+
+## Layer 4 — Scoring & Deduplication
+
+**Responsibility:** Score each job listing against the user's profile and generate a unique fingerprint for deduplication. These are pure functions with no I/O — they take data in and return a result.
+
+**Tech:** Pure Python, `hashlib`
+
+### Scoring
+
+Takes a job description string and a list of resume keywords. Returns a normalised float between 0.0 and 1.0.
+
+```
+score = (number of resume keywords found in JD) / (total resume keywords)
+```
+
+This is intentionally simple. It can be upgraded to TF-IDF or embedding cosine similarity without changing the function signature — all existing tests continue to pass.
+
+### Deduplication
+
+Takes a job record and returns a SHA-256 hash of `(company + role + url)`, normalised to lowercase. This fingerprint is stored as a unique constraint in the DB. Any attempt to insert the same job twice returns the existing record silently.
+
+**Key design decisions:**
+- Both functions are pure — no database calls, no API calls, no side effects
+- This makes them trivially unit testable with 100% branch coverage
+- The scorer receives keywords from config (`settings.resume_keywords`) — no hardcoding
+
+**Detailed doc:** `scoring.md` *(coming)*
+
+---
+
+## Layer 5 — Telegram Interface & Scheduling
+
+**Responsibility:** Give the user a conversational interface via Telegram to interact with the agent from their phone, and automate periodic scraping and digest notifications without manual triggers.
+
+**Tech:** python-telegram-bot, APScheduler (scheduling)
+
+No visual dashboard is built — all reporting is handled through the agent via natural language. The user asks questions and the LLM responds with summaries, status updates, and recommendations.
+
+### Telegram Bot
+
+A thin transport layer that sits in front of the existing `POST /chat` endpoint:
+- Receives incoming messages from the user's phone via the Telegram Bot API
+- Forwards message text (with full conversation history) to `POST /chat`
+- Returns the agent's natural language response back to the user in Telegram
+
+Setup requires a bot token from BotFather and a configured chat ID to restrict access to the owner only. The bot runs in polling or webhook mode depending on deployment environment.
+
+### APScheduler
+
+Runs two background jobs:
+- **Scrape job** — runs every 24 hours, queries Tavily for configured search terms, feeds results to the backend
+- **Digest job** — runs every Monday morning, queries all applications, identifies stale ones (no movement in 14 days), and sends a summary message directly to the user's Telegram chat
+
+**Key design decisions:**
+- No Streamlit dashboard — LLM reporting via conversation replaces all visual summaries
+- The Telegram bot is a pure transport layer — it owns no business logic, all reasoning stays in the agent
+- Access is restricted to a single configured chat ID — the bot ignores messages from anyone else
+- The digest notification replaces the previous email approach — same staleness logic, Telegram as the output channel
+- The scheduler runs in the same process as the FastAPI app via a lifespan hook, keeping the deployment simple
+
+**Detailed doc:** `frontend.md` *(coming)*
+
+---
+
+---
+
+## Development Order
+
+Each layer is built, tested, and stable before the next is started. Later layers depend on earlier ones — the agent is useless without a working backend.
+
+```
+Week 1   Backend API        Models, DB, repository, CRUD routes, TDD (DONE AND TESTED)
+Week 2   Agent Brain        LiteLLM, ReAct loop, profile manager, POST /chat (DONE AND TESTED)
+Week 3   Scraping Layer     Tavily integration, parsing, rate limiting (DONE AND TESTED)
+Week 4   Scoring & Dedup    Scoring function, fingerprinting, wired into ingestion (DONE AND TESTED)
+Week 5   Telegram Interface  Telegram bot, APScheduler digest and scrape jobs
+```
+
+---
+
+## Build Checklist
+
+- [x] **Week 1 — Backend API** — Models, DB, repository, CRUD routes, TDD
+- [x] **Week 2 — Agent Brain** — LiteLLM, ReAct loop, profile manager, tool executors, `POST /chat`
+- [x] **Week 3 — Scraping Layer** — Tavily client, parser, `_search_jobs` wired, APScheduler lifespan hook, live validation
+- [x] **Week 4 — Scoring & Dedup** — Scoring function, fingerprinting, wired into both ingestion paths (`POST /jobs` + `_search_jobs`), parser `description` fix, e2e test verified
+- [ ] **Week 5 — Telegram Interface** — Telegram bot (polling/webhook), chat ID access control, APScheduler digest (→ Telegram) and scrape jobs
+
+---
+
+## Documentation Map
+
+| File | Covers |
+|---|---|
+| `overview.md` | This file — full stack and layer summaries |
+| `backend.md` | FastAPI, SQLite, repository, CRUD routes, TDD |
+| `agent.md` | LiteLLM, tool definitions + executors, ReAct loop, profile manager, `POST /chat`, TDD plan |
+| `scraper.md` | Tavily integration, parsing, rate limiting *(coming)* |
+| `scoring.md` | Scoring function, deduplication, fingerprinting *(coming)* |
+| `frontend.md` | Telegram bot, APScheduler *(coming)* |

@@ -33,6 +33,8 @@ env/
 #Personal data
 *profile.json
 profiles/
+# Chat transcripts — one JSON Lines file per session, real conversations
+transcripts/
 
 # IDEs
 .vscode/
@@ -45,3 +47,7 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Tailoring — locally rendered CVs for manual inspection
+tailoring_output/
+artifacts/

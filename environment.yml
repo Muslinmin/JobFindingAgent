@@ -16,6 +16,8 @@ dependencies:
   - httpx
   - streamlit
   - apscheduler
+  - jinja2
+  - tectonic
   - pip:
     - "uvicorn[standard]"
     - anthropic

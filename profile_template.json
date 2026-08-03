@@ -1,0 +1,54 @@
+{
+  "name": "Jane Q. Candidate",
+  "location": "Singapore",
+  "years_of_experience": 2.5,
+  "candidate_status": "Fresh graduate, available immediately",
+  "email": "jane.candidate@example.com",
+  "phone": "+65 9000 0000",
+  "links": ["https://github.com/example", "https://www.linkedin.com/in/example/"],
+  "headline": "Example Systems, Example Institute of Technology",
+  "education": [
+    {"id": "edu_primary", "institution": "Example Institute of Technology",
+     "degree": "Bachelor of Engineering with Honours in Example Systems",
+     "graduation_date": "Jun 2026", "date_range": "2022 - 2026", "notes": "First Class Honours"},
+    {"id": "edu_secondary", "institution": "Example Polytechnic",
+     "degree": "Diploma in Example Engineering",
+     "graduation_date": "Mar 2020", "date_range": "Apr 2017 - Mar 2020", "notes": null}
+  ],
+  "target_tracks": ["example track one", "example track two"],
+  "summary_seed": "Example engineer with hands-on experience across widget design and sprocket automation.",
+  "skills": [
+    {"id": "example_language", "label": "Example Language", "aliases": [], "category": "Programming Languages"},
+    {"id": "example_framework", "label": "Example Framework",
+     "aliases": ["Example Framework (Variant Spelling)", "ExFramework"], "category": "Tools & Frameworks"},
+    {"id": "example_tool", "label": "Example Tool", "aliases": [], "category": "Tools & Frameworks"},
+    {"id": "example_concept", "label": "Example Concept", "aliases": [], "category": "Concepts"},
+    {"id": "orphan_example", "label": "Orphan Example Skill", "aliases": [], "category": null}
+  ],
+  "experiences": [
+    {"id": "exp_example_role", "title": "Example Engineer",
+     "organization": "Example Company, Singapore", "date_range": "Jan 2025 - Dec 2025",
+     "bullets": [
+       "Built an example subsystem using Example Framework, delivering it end to end and validating it against real hardware.",
+       "Maintained example documentation and integration test records throughout the engagement."
+     ],
+     "demonstrated_skills": ["example_language", "example_framework"]},
+    {"id": "exp_example_intern", "title": "Example Intern",
+     "organization": "Example Organisation, Singapore", "date_range": "Jan 2024 - Mar 2024",
+     "bullets": ["Implemented example interface components using Example Tool."],
+     "demonstrated_skills": ["example_tool"]}
+  ],
+  "projects": [
+    {"id": "proj_example_major", "title": "Example Capstone Project",
+     "organization": "Example Institute of Technology", "date_range": "2026",
+     "bullets": [
+       "Designed and delivered an example pipeline, taking it from specification through to a working demonstration on physical hardware.",
+       "Exposed the pipeline through an example service interface so other systems could invoke it."
+     ],
+     "demonstrated_skills": ["example_language", "example_framework", "example_concept"]},
+    {"id": "proj_example_minor", "title": "Example Coursework Project",
+     "organization": "Example Coursework - Example Institute of Technology", "date_range": "2023",
+     "bullets": ["Implemented an example algorithm from scratch and analysed its trade-offs."],
+     "demonstrated_skills": ["example_language", "example_concept"]}
+  ]
+}

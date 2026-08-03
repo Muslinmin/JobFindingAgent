@@ -1,0 +1,503 @@
+{
+  "_links": {
+    "next": {
+      "href": "https://api.mycareersfuture.gov.sg/v2/search?limit=20&page=1"
+    },
+    "self": {
+      "href": "https://api.mycareersfuture.gov.sg/v2/search?limit=20"
+    },
+    "first": {
+      "href": "https://api.mycareersfuture.gov.sg/v2/search?limit=20"
+    },
+    "last": {
+      "href": "https://api.mycareersfuture.gov.sg/v2/search?limit=20&page=59"
+    }
+  },
+  "searchRankingId": "fixture-search-id",
+  "results": [
+    {
+      "uuid": "c50222fb764dbabbff2d5160d8d3a0ea",
+      "score": 0.5965909778493032,
+      "title_match_score": 4,
+      "job_role_score": 2.3348265,
+      "skills_match_score": 0,
+      "recency_score": 1.0003604,
+      "metadata": {
+        "jobPostId": "MCF-2026-1203917",
+        "updatedAt": "2026-07-14T02:46:01",
+        "newPostingDate": "2026-07-14",
+        "totalNumberJobApplication": 0,
+        "isPostedOnBehalf": false,
+        "isHideSalary": false,
+        "isHideHiringEmployerName": false,
+        "jobDetailsUrl": "https://www.mycareersfuture.gov.sg/job/others/software-engineer-graviton-research-capital-c50222fb764dbabbff2d5160d8d3a0ea"
+      },
+      "address": {
+        "overseasCountry": null,
+        "foreignAddress1": null,
+        "foreignAddress2": null,
+        "block": "1",
+        "street": "RAFFLES PLACE",
+        "floor": null,
+        "unit": null,
+        "building": "ONE RAFFLES PLACE",
+        "postalCode": "048616",
+        "isOverseas": false,
+        "districts": [
+          {
+            "id": 1,
+            "location": "D01 Marina, Raffles Place, People's Park, Cecil",
+            "region": "Central",
+            "sectors": [
+              "01",
+              "02",
+              "03",
+              "04",
+              "05",
+              "06"
+            ],
+            "regionId": "Central"
+          }
+        ],
+        "lat": 1.28434954622309,
+        "lng": 103.851072545834
+      },
+      "hiringCompany": null,
+      "positionLevels": [
+        {
+          "id": 7,
+          "position": "Professional"
+        }
+      ],
+      "schemes": [],
+      "flexibleWorkArrangements": [],
+      "salary": {
+        "minimum": 16000,
+        "maximum": 17000,
+        "type": {
+          "salaryType": "Monthly"
+        }
+      },
+      "postedCompany": {
+        "uen": "201815138M",
+        "name": "GRAVITON RESEARCH CAPITAL (SINGAPORE) PTE. LTD.",
+        "logoFileName": null,
+        "logoUploadPath": null,
+        "responsiveEmployer": {
+          "isResponsive": false
+        }
+      },
+      "skills": [
+        {
+          "skill": "Scala",
+          "uuid": "3012dcff1477e1feaab81764587c9bbd"
+        },
+        {
+          "skill": "Automated Trading",
+          "uuid": "32f390471d171acf29df7ae1401c84db"
+        },
+        {
+          "skill": "Data Structures",
+          "uuid": "49110ba9c7e157360ed1b72f643bc1a3"
+        },
+        {
+          "skill": "Software Engineering",
+          "uuid": "607c057459161394d748df802b30f07b"
+        },
+        {
+          "skill": "JavaScript",
+          "uuid": "686155af75a60a0f6e9d80c1f7edd3e9"
+        },
+        {
+          "skill": "Trading System",
+          "uuid": "84224bcbfcae053200cb98ab1d1d1119"
+        },
+        {
+          "skill": "Python",
+          "uuid": "a7f5f35426b927411fc9231b56382173"
+        },
+        {
+          "skill": "Ethernet",
+          "uuid": "be2ae05fb04ddcf6efa31e63e0f0e111"
+        },
+        {
+          "skill": "Lisp",
+          "uuid": "d4f5a33e45ed97b36b1cf36ef196a57f"
+        },
+        {
+          "skill": "Java",
+          "uuid": "d52387880e1ea22817a72d3759213819"
+        },
+        {
+          "skill": "Parallel Programming",
+          "uuid": "e97e107ebe64251506c26a7460a21a96"
+        },
+        {
+          "skill": "Linux",
+          "uuid": "edc9f0a5a5d57797bf68e37364743831"
+        }
+      ],
+      "employmentTypes": [
+        {
+          "id": 8,
+          "employmentType": "Full Time"
+        }
+      ],
+      "categories": [
+        {
+          "id": 41,
+          "category": "Others"
+        }
+      ],
+      "shiftPattern": null,
+      "title": "Software Engineer",
+      "status": {
+        "id": "102",
+        "jobStatus": "Open"
+      },
+      "retriever_score": 7.498261
+    },
+    {
+      "uuid": "83d94ac7ffcd606ab539dc7618d383bc",
+      "score": 0.28940751732438824,
+      "title_match_score": 4,
+      "job_role_score": 2.3348265,
+      "skills_match_score": 0,
+      "recency_score": 1.0003604,
+      "metadata": {
+        "jobPostId": "MCF-2026-1202944",
+        "updatedAt": "2026-07-14T01:38:42",
+        "newPostingDate": "2026-07-14",
+        "totalNumberJobApplication": 0,
+        "isPostedOnBehalf": false,
+        "isHideSalary": false,
+        "isHideHiringEmployerName": false,
+        "jobDetailsUrl": "https://www.mycareersfuture.gov.sg/job/consulting/software-engineer-thales-dis-83d94ac7ffcd606ab539dc7618d383bc"
+      },
+      "address": {
+        "overseasCountry": null,
+        "foreignAddress1": null,
+        "foreignAddress2": null,
+        "block": "12",
+        "street": "AYER RAJAH CRESCENT",
+        "floor": null,
+        "unit": null,
+        "building": "THALES BUILDING",
+        "postalCode": "139941",
+        "isOverseas": false,
+        "districts": [
+          {
+            "id": 5,
+            "location": "D05 Pasir Panjang, Hong Leong Garden, Clementi New Town",
+            "region": "West",
+            "sectors": [
+              "11",
+              "12",
+              "13"
+            ],
+            "regionId": "West"
+          }
+        ],
+        "lat": 1.29615135850243,
+        "lng": 103.788072903758
+      },
+      "hiringCompany": null,
+      "positionLevels": [
+        {
+          "id": 10,
+          "position": "Junior Executive"
+        }
+      ],
+      "schemes": [],
+      "flexibleWorkArrangements": [],
+      "salary": {
+        "minimum": 4000,
+        "maximum": 6500,
+        "type": {
+          "salaryType": "Monthly"
+        }
+      },
+      "postedCompany": {
+        "uen": "198904921D",
+        "name": "THALES DIS (SINGAPORE) PTE. LTD.",
+        "logoFileName": "d3922350d65cc746e31b18df6900bc86/THALES DIS (SINGAPORE) PTE. LTD..jpg",
+        "logoUploadPath": "https://static.mycareersfuture.gov.sg/images/company/logos/d3922350d65cc746e31b18df6900bc86/THALES%20DIS%20(SINGAPORE)%20PTE.%20LTD..jpg",
+        "responsiveEmployer": {
+          "isResponsive": true
+        }
+      },
+      "skills": [
+        {
+          "skill": "manufacturing environment",
+          "uuid": "1569c3a3eb3ab0bd872f9fa0e1b853f7"
+        },
+        {
+          "skill": "Computer Engineering",
+          "uuid": "2a7bd24a3d93d25d37b22f89592fc31a"
+        },
+        {
+          "skill": "L1 Support",
+          "uuid": "3215e12fb45ee873b27f5b3302cb70f7"
+        },
+        {
+          "skill": "Preparation of Technical Documents",
+          "uuid": "4229bb12923a1a4c87cbc3518978698f"
+        },
+        {
+          "skill": "Application Monitoring",
+          "uuid": "54550b6543a033fc4a8567abbf3c296a"
+        },
+        {
+          "skill": "Coding",
+          "uuid": "7099464747ad04622e1a6575ead55a11"
+        },
+        {
+          "skill": "UiPath",
+          "uuid": "86d8b5cfb901eaa725d6704e9d43ff2f"
+        },
+        {
+          "skill": "Cybersecurity",
+          "uuid": "b03a894e101746d09277f1f255cc8a40"
+        },
+        {
+          "skill": "Oral Communication",
+          "uuid": "b26e37ac5f43e64a108e334ec5f8a040"
+        },
+        {
+          "skill": "system requirements specification",
+          "uuid": "b5ecefeb817295395ccd974a7547eb2c"
+        },
+        {
+          "skill": "Developing Frameworks",
+          "uuid": "bb063e1204256b572bd97c52644dc3b0"
+        },
+        {
+          "skill": "Application Maintenance",
+          "uuid": "cb0b901ec94002b255c856c5bcd7eea8"
+        },
+        {
+          "skill": "Collaboration With Stakeholders",
+          "uuid": "d60c53cbe0278241dc2878ffbe58cedb"
+        },
+        {
+          "skill": "Industry 4.0",
+          "uuid": "d8c2d8b378171f0050d0126b6bb390d4"
+        },
+        {
+          "skill": "Programming",
+          "uuid": "e6f43c40ab1c07cd29e4e83e4ef6bf85"
+        },
+        {
+          "skill": "Software Deployment",
+          "uuid": "ec8e99d88b2a98cf97f8575b2cbf0bb8"
+        }
+      ],
+      "employmentTypes": [
+        {
+          "id": 8,
+          "employmentType": "Full Time"
+        }
+      ],
+      "categories": [
+        {
+          "id": 7,
+          "category": "Consulting"
+        },
+        {
+          "id": 11,
+          "category": "Engineering"
+        },
+        {
+          "id": 21,
+          "category": "Information Technology"
+        },
+        {
+          "id": 24,
+          "category": "Logistics / Supply Chain"
+        },
+        {
+          "id": 25,
+          "category": "Manufacturing"
+        }
+      ],
+      "shiftPattern": null,
+      "title": "Software Engineer",
+      "status": {
+        "id": "102",
+        "jobStatus": "Open"
+      },
+      "retriever_score": 7.493914
+    },
+    {
+      "uuid": "9377e84fe7fc747523accda826452caf",
+      "score": 0.07572924399529396,
+      "title_match_score": 4,
+      "job_role_score": 2.3348477,
+      "skills_match_score": 0,
+      "recency_score": 1.0004987,
+      "metadata": {
+        "jobPostId": "MCF-2026-1213767",
+        "updatedAt": "2026-07-15T04:27:42",
+        "newPostingDate": "2026-07-15",
+        "totalNumberJobApplication": 0,
+        "isPostedOnBehalf": true,
+        "isHideSalary": false,
+        "isHideHiringEmployerName": false,
+        "jobDetailsUrl": "https://www.mycareersfuture.gov.sg/job/information-technology/software-engineer-newland-payment-technology-9377e84fe7fc747523accda826452caf"
+      },
+      "address": {
+        "overseasCountry": null,
+        "foreignAddress1": null,
+        "foreignAddress2": null,
+        "block": "91",
+        "street": "BENCOOLEN STREET",
+        "floor": null,
+        "unit": null,
+        "building": "SUNSHINE PLAZA",
+        "postalCode": "189652",
+        "isOverseas": false,
+        "districts": [
+          {
+            "id": 7,
+            "location": "D07 Middle Road, Golden Mile",
+            "region": "Central",
+            "sectors": [
+              "18",
+              "19"
+            ],
+            "regionId": "Central"
+          }
+        ],
+        "lat": 1.30034767173014,
+        "lng": 103.851046126825
+      },
+      "hiringCompany": {
+        "uen": "202240835W",
+        "description": null,
+        "name": "NEWLAND PAYMENT TECHNOLOGY PTE. LTD.",
+        "ssicCode": null,
+        "employeeCount": null,
+        "companyUrl": null,
+        "lastSyncDate": "2026-07-17T04:57:46.000Z",
+        "ssicCode2020": "62011",
+        "badges": [],
+        "_links": {
+          "self": {
+            "href": "https://api.mycareersfuture.gov.sg/v2/companies/202240835W"
+          },
+          "jobs": {
+            "href": "https://api.mycareersfuture.gov.sg/v2/companies/202240835W/jobs"
+          },
+          "addresses": {
+            "href": "https://api.mycareersfuture.gov.sg/v2/companies/202240835W/addresses"
+          },
+          "schemes": {
+            "href": "https://api.mycareersfuture.gov.sg/v2/companies/202240835W/schemes"
+          }
+        },
+        "logoFileName": null,
+        "logoUploadPath": null
+      },
+      "positionLevels": [
+        {
+          "id": 10,
+          "position": "Junior Executive"
+        }
+      ],
+      "schemes": [],
+      "flexibleWorkArrangements": [
+        {
+          "id": 1,
+          "flexibleWorkArrangement": "Flexi-Hours"
+        }
+      ],
+      "salary": {
+        "minimum": 8000,
+        "maximum": 12000,
+        "type": {
+          "salaryType": "Monthly"
+        }
+      },
+      "postedCompany": {
+        "uen": "202240302N",
+        "name": "HANSING RECRUITMENT PTE. LTD.",
+        "logoFileName": "9034c1f7392ca5da1b53fe1e06730c5c/hansing-recruitment.jpg",
+        "logoUploadPath": "https://static.mycareersfuture.gov.sg/images/company/logos/9034c1f7392ca5da1b53fe1e06730c5c/hansing-recruitment.jpg",
+        "responsiveEmployer": {
+          "isResponsive": true
+        }
+      },
+      "skills": [
+        {
+          "skill": "Writing Technical Specifications",
+          "uuid": "07299d2df92d44fb374b95a06cfae4df"
+        },
+        {
+          "skill": "Timely Delivery",
+          "uuid": "28a42a2183a5aa59d36a114c93f5859e"
+        },
+        {
+          "skill": "Regulatory Compliance",
+          "uuid": "32fd35bcce8e0664e68eaa19bbb8a9f4"
+        },
+        {
+          "skill": "Innovator",
+          "uuid": "515cc833a897a7e6691690482bba5490"
+        },
+        {
+          "skill": "Software Engineering",
+          "uuid": "607c057459161394d748df802b30f07b"
+        },
+        {
+          "skill": "VC",
+          "uuid": "b7128ad1d9b838be26989d1037a8c987"
+        },
+        {
+          "skill": "Software Design",
+          "uuid": "c1b8eee14e05c47f56588fb5e842f6e9"
+        },
+        {
+          "skill": "C#",
+          "uuid": "d7efa19fbe7d3972fd5adb6024223d74"
+        },
+        {
+          "skill": "Android",
+          "uuid": "e84e30b9390cdb64db6db2c9ab87846d"
+        },
+        {
+          "skill": "Able To Work Independently",
+          "uuid": "f3003179e62d8d52170ad7ba00881f2e"
+        },
+        {
+          "skill": "C++",
+          "uuid": "f6f87c9fdcf8b3c3f07f93f1ee8712c9"
+        },
+        {
+          "skill": "Android Application Development",
+          "uuid": "fe7fa921d41770ebfb2120972fc2f51c"
+        }
+      ],
+      "employmentTypes": [
+        {
+          "id": 8,
+          "employmentType": "Full Time"
+        }
+      ],
+      "categories": [
+        {
+          "id": 21,
+          "category": "Information Technology"
+        }
+      ],
+      "shiftPattern": null,
+      "title": "Software Engineer",
+      "status": {
+        "id": "102",
+        "jobStatus": "Open"
+      },
+      "retriever_score": 7.607082
+    }
+  ],
+  "total": 1196,
+  "countWithoutFilters": 1196
+}
